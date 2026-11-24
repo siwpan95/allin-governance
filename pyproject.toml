@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+# allin-governance —— 工作区治理中枢的公共核。
+#
+# 与 1.x 的关键差别：**没有任何跨目录 package-dir 映射**。
+# 源码就在 src/allin_governance/ 下，包内即真身 —— 「包内副本是否与仓内一致」
+# 这类对账问题从根上不存在（消费仓的 check_pkg_parity.py 因此删除）。
+
+[project]
+name = "allin-governance"
+version = "2.0.0"
+description = "工作区治理中枢的公共核：可执行门禁 + 文档枢纽契约 + 仓库体检 + 机器事实采集"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT-0"
+license-files = ["LICENSE"]
+authors = [{ name = "siwpan" }]
+keywords = [
+  "governance", "policy-as-code", "repo-hygiene", "audit", "gates",
+  "ai-collaboration", "single-source-of-truth", "offline",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Quality Assurance",
+]
+
+# 运行时零第三方依赖：治理工具要在「一台什么都没装的机器」上跑起来。
+dependencies = []
+
+[project.optional-dependencies]
+full = [
+  "license-expression>=30.0",
+  "detect-secrets>=1.5",
+  "markdown-it-py>=3.0",
+  "requirements-parser>=0.11",
+  "packaging>=23.0",
+]
+dev = ["pytest>=8.0", "PyYAML>=6.0"]
+
+[project.urls]
+Repository = "https://gitee.com/siwpan/allin-governance"
+Issues = "https://gitee.com/siwpan/allin-governance/issues"
+
+[project.scripts]
+allin-governance = "allin_governance.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = [
+  "allin_governance",
+  "allin_governance._repocheck",
+  "allin_governance._gatesuite",
+  "allin_governance._gatesuite.gates",
+  "allin_governance._gatesuite.runtime",
+  "allin_governance._toolkit",
+  "allin_governance._toolkit.pytrunner",
+  "allin_governance._github",
+  "allin_governance._secret_scan",
+  "allin_governance._facts",
+]
+
+[tool.setuptools.package-data]
+"allin_governance._repocheck" = ["README.md", "LICENSE", "CHANGELOG.md"]
+"allin_governance._facts" = ["README.md"]
+# 门禁套件运行时必需/随包分发的非 .py 文件：exceptions.yml（g18 读）、
+# registry-known-gaps.txt（g17/g18 读）、preset/*（g14 的 SHIPPED 基准）、
+# run.ts 与 registry.json（入口与事实源）。
+# ⚠ ledger/ 不随包（2.0.0 修正）：那是消费仓自己的豁免台账（B 层实例数据），
+#   随包会带着别人的仓清单走。2.0.0 起路径参数化，包内只放 *.example.csv 模板。
+"allin_governance._gatesuite" = [
+  "*.ts", "*.json", "*.yml", "*.txt", "RULES.md", "README.md",
+  "baseline/*.txt", "preset/*.yml", "preset/*.md", "ledger/*.example.csv",
+]

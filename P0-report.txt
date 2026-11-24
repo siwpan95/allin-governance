@@ -1,0 +1,70 @@
+==============================================================================
+P0 · 公共核提仓 dry-run（只报告）
+==============================================================================
+
+源仓：D:\projects\repos\allin
+
+源目录                                               文件        体积  → 包内落点
+tools/gate/governance                             52     0.50M  src/allin_governance/_gatesuite
+tools/repocheck                                   36     0.29M  src/allin_governance/_repocheck
+tools/_shared                                      7     0.05M  src/allin_governance/_toolkit
+tools/github                                       3     0.03M  src/allin_governance/_github
+tools/secret_scan                                  2     0.02M  src/allin_governance/_secret_scan
+tools/facts                                       12     0.11M  src/allin_governance/_facts
+packages/allin-governance/src/allin_governance     5     0.07M  src/allin_governance
+
+合计 **117 文件 / 1.08 MB**
+
+各目录被引用次数（文件级）：
+  tools/gate/governance         59 个文件
+  tools/repocheck               49 个文件
+  tools/_shared                 14 个文件
+  tools/github                   8 个文件
+  tools/secret_scan              5 个文件
+  tools/facts                   42 个文件
+  packages/allin-governance/src/allin_governance   0 个文件
+
+allin 编排侧要改的地方（按位置分组）：
+  [其他] 48 个文件
+      .gitee/PULL_REQUEST_TEMPLATE.zh-CN.md
+      .pre-commit-config.yaml
+      .workbuddy/skills/allin-audit-doc-check/SKILL.md
+      .workbuddy/skills/allin-governance-agent/SKILL.md
+      .workbuddy/skills/github-sync-audit/SKILL.md
+      .workflow/pipeline.yml
+      … 另 42 个
+  [文档引用（P1 后按需改指针）] 45 个文件
+      docs/INDEX.md
+      docs/facts/tiering.yaml
+      docs/facts/tools.yaml
+      docs/facts/工具分类索引.md
+      docs/facts/机器/DESKTOP-8RSV60V/DESKTOP-8RSV60V.md
+      docs/facts/机器/DESKTOP-KQABATS/DESKTOP-KQABATS.md
+      … 另 39 个
+  [仓测试] 6 个文件
+      tests/test_facts_cli_pure.py
+      tests/test_p2_convergence.py
+      tests/test_p2_sec_remediation.py
+      tests/test_p3_pure.py
+      tests/test_repo_hygiene_pure.py
+      tests/test_runtime_defaults.py
+  [CI] 2 个文件
+      .github/workflows/deploy-pages.yml
+      .github/workflows/gates.yml
+  [DSH preset 治理段] 4 个文件
+      preset/allin/agent.cordis.yml
+      preset/allin/allin.patch.yml
+      preset/allin/bundle/cordis.patch.yml
+      preset/allin/安装说明.md
+  [门禁编排主链] 1 个文件
+      scripts/run_all_gates.sh
+  [platform 门户/CLI 总线] 4 个文件
+      platform/packages/core/test/registry.test.mjs
+      platform/registry/ports.yaml
+      platform/registry/projects/allin.yaml
+      platform/registry/projects/skyrim-lifeline.yaml
+
+跨目录绝对导入（提仓后必断，P1 需改相对导入）：1 处
+  tools/github/github_release.py:68  from tools
+
+下一步（P1，需放行）：复制 120 文件 → 生成无映射的 pyproject → 改相对导入 → 构建 wheel → 解包自检
