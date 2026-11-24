@@ -1,0 +1,2 @@
+rule,path,reason,recorded_at,status
+H5,path/to/file,为什么豁免（注意：reason 里不要写任何形似凭据的示例串）,2026-01-01,accepted-exemption

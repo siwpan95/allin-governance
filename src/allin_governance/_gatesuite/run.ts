@@ -33,7 +33,20 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const ROOT = resolve(import.meta.dirname, '..')
+// 两种形态（2026-11-25 公共核提仓）：
+//   仓内形态：<仓>/tools/gate/governance/run.ts → ROOT = <仓>/tools/gate
+//                        registry 的 script 写 `governance/gates/x.py`
+//   包内形态：<site-packages>/allin_governance/_gatesuite/run.ts → ROOT = _gatesuite
+//                        gates 就在 ROOT/gates/ 下，故剥掉 `governance/` 前缀
+const HERE = import.meta.dirname
+const IN_PACKAGE = HERE.endsWith('_gatesuite')   // 跨平台：不依赖分隔符
+const ROOT = IN_PACKAGE ? HERE : resolve(HERE, '..')
+
+/** gate.script 在包内形态下少一层 `governance/`。 */
+function gateScript(gate) {
+  const rel = IN_PACKAGE ? gate.script.replace(/^governance\//, '') : gate.script
+  return resolve(ROOT, rel)
+}
 const REGISTRY_PATH = resolve(import.meta.dirname, 'registry.json')
 
 /** Exit-code vocabulary shared by every governance gate. */
@@ -250,7 +263,7 @@ function selectGates(registry: GateEntry[], options: Options): GateEntry[] {
 
 /** Run one gate as a child process, streaming its output to the caller. */
 function runGate(gate: GateEntry, interpreter: Interpreter, args: string[]): GateOutcome {
-  const script = resolve(ROOT, gate.script)
+  const script = gateScript(gate)
   const result = spawnSync(interpreter.command, [...interpreter.prefix, script, ...args], {
     cwd: ROOT,
     stdio: 'inherit',

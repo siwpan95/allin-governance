@@ -1,0 +1,2 @@
+check,repo,path,reason,recorded_at,status
+example-check,example-repo,path/to/file,为什么豁免这条（写清楚裁决依据）,2026-01-01,accepted-exemption
