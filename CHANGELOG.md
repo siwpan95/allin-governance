@@ -1,5 +1,45 @@
 # 变更记录
 
+## 2.4.1 —— 2026-11-25
+
+**自检不许再随环境变。** 修一个只在 CI 才红的缺陷。
+
+### 缺陷
+
+2.4.0 的棘轮自检里，有一条用例验的是「人类本地跑、`--pass-on-stale` 应被放行」，但它**继承了宿主环境变量 `CI`**。GitHub Actions 全局注入 `CI=true` ⇒ 该分支在 CI 里永远走"被拒" ⇒ 用例必红：
+
+```
+FAIL missed injected defect: ratchet/human-only-in-ci-rejected
+SELFCHECK {"caught":11,"clean":4,"misreports":0}
+```
+
+本地永远绿（本地没有 `CI`），CI 100% 红（不是 flaky）。连带把 `check_blind_gates.py --two-halves` 判成 `selfcheck_exit=1`。
+
+### 修法
+
+- `govlib.controlled_env(**values)`：`None` 表示**该变量必须不存在**（走 `os.environ.pop`，不设空串 —— `""` 与"不存在"在 `in os.environ` 上语义不同）；`finally` 无条件还原。
+- 那条用例拆成**三条各自钉死环境的断言**，无一处读宿主：`CI=None + --ci` ⇒ 拒；`CI=1 + 无 --ci` ⇒ 拒；`CI=None + 无 --ci` ⇒ 放行。
+- 新增第 9 条 `ratchet/env-window-restored`：窗口跑完，`os.environ["CI"]` 必须与进场逐字相同 —— 泄漏的 `CI=1` 会让同进程后续所有用例换行为，比没有窗口更难查。
+- 全局审计：只有 `g15`(`ALLIN_GATE_STRICT_SKIP`) 与 `g17`(`ALLIN_REPOS_ROOT`) 在自检里动环境，两处都是显式设值 + `finally` 还原，不继承。
+
+### 实测
+
+| 环境 | g19 自检 |
+| --- | --- |
+| 无 `CI` | `SELFCHECK {"caught":13,"clean":4,"misreports":0}` exit 0 |
+| `CI=true` | 同上，exit 0 |
+| `CI=0` | 同上，exit 0（"有人明确关掉"不应被读成 CI）|
+
+`--selfcheck-all` 在 `CI=true` 与无 `CI` 两种环境均 **20/20 clean**；下游 `check_blind_gates --two-halves` 回绿（`selfcheck_exit=0`）。
+
+### 判据未放宽
+
+`g19` 判 `allin`：`scanned 89 / blocking 0 / exempted 350`（89 而非 88，是 `architecture/adr/ADR-0011-…md` 新增后判定面 +1，非回归）。
+
+### 教训
+
+**自检用例必须显式设定它要测的环境变量，不能继承。** 继承的后果是「测了 runner」—— 本地绿、CI 红，且两边都自认有理。
+
 ## 2.4.0 —— 2026-11-25
 
 **判据开始计量自己的工作量。** 三件事：基线从"只拦新增"升级为**双侧棘轮**；`g15` 补上 `scanned`；`g15` 自检的负对照从"能打印"变成"能判"。

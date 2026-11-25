@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -685,6 +686,37 @@ def in_ci(flag: bool = False) -> bool:
     return os.environ.get("CI", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+@contextmanager
+def controlled_env(**values: str | None):
+    """在一个**完全指定**的环境窗口里执行代码：``None`` = 这个变量必须不存在。
+
+    给自检用。存在的理由不是方便，是一次真实故障（2026-11-25）：自检用例读取了
+    宿主的 ``CI``，于是在 GitHub Actions（注入 ``CI=true``）里必红、在开发机里必绿。
+    一个结果随宿主环境变化的自检，测的是 runner 而不是门禁。
+
+    ``None`` 走 ``pop`` 而不是 `""`：`""` 与"不存在"在 `in os.environ` 上不同，
+    而下游实现随时可能改用存在性判断 —— 让自检表达"没有这个变量"，不是"有这个空变量"。
+    """
+    previous: dict[str, str | None] = {name: os.environ.get(name) for name in values}
+    try:
+        for name, value in values.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+#: ``ratchet_selfcheck`` 内部的短名：selfcheck 里写 `_env(CI="1")` 比 `controlled_env(CI="1")` 短。
+_env = controlled_env
+
+
 def ratchet_human_only(args) -> list[str]:
     """列出「在 CI 下不该出现的人手开关」。空列表 = 允许继续。
 
@@ -778,15 +810,36 @@ def ratchet_selfcheck(check: SelfCheck) -> None:
                       and any("scanned=1 baseline=1 stale=0 new=0" in line
                               for line in exact_revision.lines))
 
-        # 8. ADR-0011 D1.4：人手开关在 CI 下是**用法错误**，不是放行。
-        check.detects("ratchet/human-only-in-ci-rejected",
-                      ratchet_human_only(argparse.Namespace(ci=True, pass_on_stale=True,
-                                                            allow_baseline_growth=False))
-                      == ["--pass-on-stale"]
-                      and ratchet_human_only(argparse.Namespace(ci=False, pass_on_stale=True,
-                                                                allow_baseline_growth=True)) == [])
+        # 8. ADR-0011 D1.4：人手开关在 CI 下是**用法错误**，CI 外才放行。
+        #
+        #    ⚠ 2026-11-25 CI 事故（本函数自己踩的坑，必须记住）：这一条原先写
+        #    `Namespace(ci=False, …)` 就走「应放行」分支，却**继承了宿主环境的 CI**。
+        #    GitHub Actions 全局注入 `CI=true` ⇒ 这一支在 CI 里永远走「被拒」⇒
+        #    `detects` 判失败 ⇒ SELFCHECK 报 `missed injected defect` ⇒ 门禁退 1。
+        #    本地永远复现不出来（本地没有 CI），CI 上 100% 红 —— 自检测的成了 runner。
+        #
+        #    规矩：**自检用例显式设定它要测的环境，不读取宿主的。**
+        #    三条断言各自钉死环境：① 显式 --ci；② 只靠 CI=1；③ 环境里没有 CI。
+        ambient = os.environ.get("CI")
+        with _env(CI=None):
+            by_flag = ratchet_human_only(
+                argparse.Namespace(ci=True, pass_on_stale=True,
+                                   allow_baseline_growth=False)) == ["--pass-on-stale"]
+        with _env(CI="1"):
+            by_env = ratchet_human_only(
+                argparse.Namespace(ci=False, pass_on_stale=True,
+                                   allow_baseline_growth=False)) == ["--pass-on-stale"]
+        with _env(CI=None):
+            local_only = ratchet_human_only(
+                argparse.Namespace(ci=False, pass_on_stale=True,
+                                   allow_baseline_growth=True)) == []
+        check.detects("ratchet/human-only-in-ci-rejected", by_flag and by_env and local_only)
 
-        # 9. 账本与现状一致：退 0，且没有任何过期噪声。
+        # 9. 环境窗口必须**关得回去**：一个泄漏出去的 CI=1 会让后面所有 selfcheck
+        #    用例（以及同进程其它门禁）悄悄换一种行为 —— 比没有窗口更难查。
+        check.detects("ratchet/env-window-restored", os.environ.get("CI") == ambient)
+
+        # 10. 账本与现状一致：退 0，且没有任何过期噪声。
         #    断言不能只搜"过期"二字：干净时的输出是「…, 无过期键)」，搜子串会自伤
         #    （selfcheck 立刻报 misreport）—— 噪声的定义是**喊有 stale**，不是提到这个词。
         quiet = baseline_check(exact, [finding(a)], folder)
