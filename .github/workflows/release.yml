@@ -1,0 +1,32 @@
+name: release-artifact
+
+# 从消费仓 allin 迁入：发版预检的执行地必须与源码同仓。
+# 这条 job 验证「发布物装得上」——twine check 只看元数据，装 wheel 只走 wheel，
+# 缺的正是从 sdist 装一次这条实验（1.0.0 事故）。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  release-artifact:
+    name: 发布物自包含与可安装（sdist + wheel）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: 构建 sdist + wheel
+        run: |
+          python -m pip install --quiet --upgrade pip build twine
+          python -m build
+
+      - name: 放行前校验（版本一致 / dist 干净 / sdist 自包含 / 双产物各装一次）
+        run: python scripts/release_preflight.py --install

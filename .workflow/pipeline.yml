@@ -1,0 +1,34 @@
+# allin-governance 发版预检 · Gitee Go 流水线
+#
+# 从消费仓 allin 的 release_artifact 步骤迁入：预检判据与源码必须同仓。
+# 验证的是「发布物装得上」——sdist 与 wheel 各在干净 venv 装一次并跑子命令。
+#
+# ⚠ 启用前提（API 做不到，需手动）：
+#   Gitee 仓库页 → DevOps → Gitee Go → 开通 → 新建流水线 → 代码视图粘贴本文件。
+#   实测 Gitee API v5 无流水线端点，故本文件是开通后的代码视图内容源。
+
+version: "1.0"
+name: allin-governance-release
+displayName: allin-governance 发布物自包含与可安装
+
+stages:
+  - name: release
+    displayName: 发布物预检
+    strategy: fast
+    trigger: auto
+    steps:
+      - step: build@python
+        name: release_artifact
+        displayName: sdist + wheel 各装一次 + 子命令冒烟
+        pythonVersion: "3.13"
+        env:
+          PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+        commands:
+          - python3 -m pip install --upgrade pip build twine
+          - python3 -m build
+          - python3 scripts/release_preflight.py --install
+        settings: []
+        caches: []
+        notify: []
+        strategy:
+          retry: "0"

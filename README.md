@@ -38,7 +38,19 @@ allin-governance --version
 allin-governance facts measure          # 换机第一件事：这台机器长什么样
 ```
 
+当前版本 `2.0.2`（以 [PyPI](https://pypi.org/project/allin-governance/) 为准）。
+
 运行时零第三方依赖——治理工具要能在「一台什么都没装的机器」上跑起来。
+
+### 发版前校验（维护者）
+
+```bash
+python -m build                            # 构建 sdist + wheel
+python scripts/release_preflight.py --install   # 版本对账 / dist 干净 / sdist 自包含 / 双产物各装一次
+```
+
+`--install` 是 1.0.0 事故（wheel 好、sdist 坏）的唯一鉴别实验，发版前必跑；
+`twine check` 与 `--install` 在无人值守场景记为「未验证」，不等于通过。
 
 ## 边界
 
