@@ -907,6 +907,40 @@ def check_d18(docs: str, files: list[str], rep) -> None:
                       "（存量历史节不判）" % (f, last[3:40].strip()))
 
 
+#: D19 —— 共有月账的条目体裁（2026-11-25 起，SPEC-005 §3.14）：
+#: `记录/记忆/YYYY-MM.md` 是**多机共有的月账**，只该记「跨机成立的结论」。
+#: 「这件事是哪台机做的」属于过程，该进各机的 `事实源/机器/<机>/月账/`。
+#: 早期用 `- **2026-11-01 23:50（@SIWPAN）**` 给条目标归属，这个格式已废弃 ——
+#: 判据只抓**时间戳里**的 `（@机名）`（明确的条目归属），
+#: 正文里的 `（@SIWPAN 实证)` 是**教训来源**，合法，不判。
+#: 与 D18 同精神：只判 `>= _D19_EFFECTIVE_FROM` 的条目，存量历史不逼迫改写。
+_D19_EFFECTIVE_FROM = "2026-11-25"
+_D19_ENTRY = re.compile(r"^- \*\*(20\d\d-\d\d-\d\d)")
+_D19_OWNED_TS = re.compile(r"^- \*\*20\d\d-\d\d-\d\d[^*]*（@[`A-Za-z]")
+
+
+def check_d19(docs: str, files: list[str], rep) -> None:
+    """**共有月账不按机归属**（只判生效日之后的条目）。范围：`记录/记忆/YYYY-MM.md`。"""
+    for f in files:
+        name = f.rsplit("/", 1)[-1]
+        if not f.startswith("记录/记忆/") or not re.fullmatch(r"\d{4}-\d{2}\.md", name):
+            continue
+        text = read_text(os.path.join(docs, f.replace("/", os.sep)))
+        hit = 0
+        for line in text.split("\n"):
+            m = _D19_ENTRY.match(line)
+            if not m or m.group(1) < _D19_EFFECTIVE_FROM:
+                continue
+            if _D19_OWNED_TS.match(line):
+                rep.block("D19", "%s 条目在时间戳里标了归属机：「%s」—— 共有月账只记跨机结论，"
+                          "「哪台机做的」属于过程，写进 `事实源/机器/<机>/月账/`"
+                          "（正文里的「（@机名 实证）」是教训来源，不受此限）"
+                          % (f, line[2:50].strip()))
+                hit += 1
+        if not hit:
+            rep.exempt("D19-no-ownership")
+
+
 # ---------------------------------------------------------------- 自检
 def _fixture(kind: str, base: str) -> str:
     """造一个迷你枢纽（只含新判据所需的结构）。
@@ -983,6 +1017,13 @@ def _fixture(kind: str, base: str) -> str:
         f.write("# 会话交接 · 2026-10 卷（2026-10-04 ~ %s）\n\n"
                 "## 一、总体状态\n\n## 五十八、收尾\n\n%s" % (hi, body))
 
+    # D19 夹具：共有月账（生效日之后的条目）。默认合法：结论 + 无归属标注。
+    # `mem-owned-entry` 用例在时间戳里塞 `（@SIWPAN）` —— 判据必须由 D19 自己拦下。
+    os.makedirs(os.path.join(docs, "记录", "记忆"), exist_ok=True)
+    owner_ts = "（@SIWPAN）" if kind == "mem-owned-entry" else ""
+    with io.open(os.path.join(docs, "记录", "记忆", "2026-11.md"), "w", encoding="utf-8") as f:
+        f.write("# 记忆 · 2026-11\n\n- **2026-11-25 12:00%s** [test] 跨机成立的结论。\n" % owner_ts)
+
     # INDEX：登记行 + 两处份数自述 + 供 D13 用的行号（FACT-01）与登记表行
     rec_n = 5 if broken_count else 1
     head_rec = 1
@@ -1025,11 +1066,12 @@ def selfcheck_extra() -> dict[str, int]:
     d15_cases = ("ctrl-char", "tab-in-code")
     d16_cases = ("plan-status-invalid", "plan-evidence-missing")
     d17_cases = ("fact-no-record-ref",)
+    d19_cases = ("mem-owned-entry",)
     caught = clean = misreports = 0
     for kind in (("anchor-dangling", "spec-anchor-dangling", "alias-anchor-dangling",
                   "range-too-narrow", "count-line-drift", "index-range-drift",
                   "row-contract-dangling", "row-id-dangling", "bare-ref-dangling")
-                 + d15_cases + d16_cases + d17_cases):
+                 + d15_cases + d16_cases + d17_cases + d19_cases):
         tmp = tempfile.mkdtemp(prefix="docscontract_")
         try:
             docs = _fixture(kind, tmp)
@@ -1044,6 +1086,7 @@ def selfcheck_extra() -> dict[str, int]:
             check_d16(docs, rep)
             check_d17(docs, _mini_files(docs), rep)
             check_d18(docs, _mini_files(docs), rep)
+            check_d19(docs, _mini_files(docs), rep)
             if rep.blocking:
                 caught += 1
                 if kind in d15_cases and any(c != "D15" for c, _ in rep.blocking):
@@ -1057,6 +1100,10 @@ def selfcheck_extra() -> dict[str, int]:
                 if kind in d17_cases and not any(c == "D17" for c, _ in rep.blocking):
                     misreports += 1
                     print("MISREPORT %s not caught by D17 itself: %s"
+                          % (kind, [c for c, _ in rep.blocking]))
+                if kind in d19_cases and not any(c == "D19" for c, _ in rep.blocking):
+                    misreports += 1
+                    print("MISREPORT %s not caught by D19 itself: %s"
                           % (kind, [c for c, _ in rep.blocking]))
             else:
                 print("MISSED case not caught: %s" % kind)
@@ -1077,6 +1124,7 @@ def selfcheck_extra() -> dict[str, int]:
         check_d16(docs, rep)
         check_d17(docs, _mini_files(docs), rep)
         check_d18(docs, _mini_files(docs), rep)
+        check_d19(docs, _mini_files(docs), rep)
         if rep.blocking:
             misreports += 1
             print("MISREPORT clean-case failed: %s -- %s" % (kind, [m for _, m in rep.blocking][:3]))
