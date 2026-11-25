@@ -1,5 +1,29 @@
 # 变更记录
 
+## 2.2.2 —— 2026-11-25
+
+**修 2.2.1 漏掉的第二处迁包缺陷：`gitee_release.main()` 签名不接受 argv。**
+
+2.2.1 修了 `import runtime_defaults`，但 `main()` 仍是 `def main():`（无参、自己 parse
+`sys.argv`）—— `allin-governance gitee <cmd>` 分发时传 argv 直接
+`TypeError: main() takes 0 positional arguments but 1 was given`。
+
+**两个缺陷都是「从 PyPI 装一次、真跑一遍」才暴露的**，仓内测试跑不出来（仓内 import 走的是
+源码目录，不走包）。这条写进教训：**迁包后必须从安装态真跑每条子命令**。
+
+## 2.2.1 —— 2026-11-25
+
+**修 2.2.0 的致命缺陷：`gitee` 子命令在包内形态下直接 ImportError。**
+
+2.2.0 把 `gitee_release.py` 迁进包时，它顶层的 `import runtime_defaults` 没跟着处理 ——
+那个模块只在 allin 仓的 `tools/` 下存在。于是从 PyPI 装 2.2.0 后跑
+`allin-governance gitee …` 会 `ModuleNotFoundError: No module named 'runtime_defaults'`。
+
+**修法**：三段回退（包内 → 仓内旧布局 → 内置默认值），迁包不因一个可选依赖就把整个发布工具打死。
+
+**这个缺陷是「发布链路收拢」自己抓出来的**：2.2.0 的第一次 `publish release` 跑完，
+allin 侧一跑 `pytest tests/test_gitee_release_pure.py` 就炸了 —— 新入口第一时间暴露了迁包漏项。
+
 ## 2.2.0 —— 2026-11-25
 
 **发布链路收拢：`gitee` / `github` / `publish` 三个子命令 + `PUBLISHING.md`。**

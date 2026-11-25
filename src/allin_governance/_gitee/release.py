@@ -66,12 +66,27 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-# 第二阶段（2026-11-11）：网络超时收敛到 tools/runtime_defaults.py 单一事实源。
-# tools/ 即本脚本所在目录，显式注入以支持从任意 cwd 直接执行（不写死盘符）。
-_TOOLS_DIR = str(Path(__file__).resolve().parent)
-if _TOOLS_DIR not in sys.path:
-    sys.path.insert(0, _TOOLS_DIR)
-import runtime_defaults as _rd  # noqa: E402
+# 网络超时来自**单一事实源**（2026-11-11 起收敛，原 `tools/runtime_defaults.py`）。
+# 2.2.0 迁入包后该模块不在包里，改为「包内优先 → 仓内回退 → 内置默认值」三段：
+# 迁包不能因为一个可选依赖就把整个发布工具打死。
+try:  # ① 包内若将来收编 runtime_defaults，走这条
+    from allin_governance import runtime_defaults as _rd  # type: ignore[attr-defined]
+except ImportError:
+    try:  # ② 旧仓内布局（tools/ 与本文件同目录）
+        _TOOLS_DIR = str(Path(__file__).resolve().parent)
+        if _TOOLS_DIR not in sys.path:
+            sys.path.insert(0, _TOOLS_DIR)
+        import runtime_defaults as _rd  # noqa: E402
+    except ImportError:  # ③ 兜底：内置默认值（与 runtime_defaults 的出厂值一致）
+        class _Fallback:  # noqa: D401
+            """最小替代：只提供 timeout(key)。"""
+
+            _DEFAULTS = {"url_open": 30, "http_upload": 120}
+
+            def timeout(self, key: str) -> int:
+                return self._DEFAULTS.get(key, 30)
+
+        _rd = _Fallback()  # type: ignore[assignment]
 
 API = "https://gitee.com/api/v5"
 MAX_ATTACH_MB = 100.0        # Gitee 社区版单附件上限（见文件头）
@@ -712,9 +727,14 @@ def build_parser():
     return ap
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
+    """入口。`argv` 可传（包内 CLI 分发时用），不传则读 `sys.argv`（命令行直跑）。
+
+    2.2.1 补：原签名是 `main()` 无参，被 `allin-governance gitee` 分发调用时
+    传 argv 就 `TypeError` —— 迁包后必须真跑一遍才暴露。
+    """
     ap = build_parser()
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.cmd == "selfcheck":                  # 自检是离线的，先于取令牌
         return cmd_selfcheck(args, "")
