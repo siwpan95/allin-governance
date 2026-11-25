@@ -368,6 +368,44 @@ def _cmd_github(argv: list[str]) -> int:
         return int(code) if isinstance(code, int) else (0 if code is None else 1)
 
 
+
+
+def _gitee_module():
+    """Gitee 发布工具（2.2.0 从 allin 仓迁入包内 `_gitee/release.py`）。"""
+    from allin_governance._gitee import release as gitee_release
+    return gitee_release
+
+
+def _cmd_gitee(argv: list[str]) -> int:
+    """Gitee 建仓/转公开/发布发行版（gitee 是本体系**权威**端）。
+
+    子命令：whoami|create|remote|public|release|attach|upload|status|selfcheck
+    令牌走 GITEE_TOKEN 或 --token-file；工具本身不打印、不入库。
+    与 `github` 子命令配对：gitee 权威 → 本地 → GitHub 镜像。
+    """
+    gitee_release = _gitee_module()
+    try:
+        return gitee_release.main(argv)
+    except SystemExit as exc:  # argparse 的 --help / 参数错误
+        code = exc.code
+        return int(code) if isinstance(code, int) else (0 if code is None else 1)
+
+
+def _cmd_publish(argv: list[str]) -> int:
+    """PyPI 发版链路：check / build / verify / upload / release。
+
+    为什么存在：2.1.0 手打 `build --wheel` 漏了 sdist，而 CI 里的「双产物」判据
+    因为人没走 CI 而形同虚设。收拢成一个入口 + 四道可独立执行的判据。
+    流程与坑：包根 `PUBLISHING.md`。
+    """
+    from allin_governance._publish import pypi
+    try:
+        return pypi.main(argv)
+    except SystemExit as exc:
+        code = exc.code
+        return int(code) if isinstance(code, int) else (0 if code is None else 1)
+
+
 #: 子命令表。新增能力只需在这里加一行，**不要**新开一个顶层入口点。
 SUBCOMMANDS: dict[str, tuple[str, object]] = {
     "repocheck": ("离线仓库体检：30 条规则，给出 0-10 健康分与 error/warn/info 三级问题", _cmd_repocheck),
@@ -376,6 +414,8 @@ SUBCOMMANDS: dict[str, tuple[str, object]] = {
     "scan": ("发布区扫盘：项目指纹 / 重复检出 / 迁移残留（只报告不处置）", _cmd_scan),
     "deps": ("依赖体检：requirements 声明 · 解释器实装 · 仓内 import 三者对账", _cmd_deps),
     "github": ("GitHub 建仓/推送/三端巡检（gitee 为权威）；github-sync 子命令走巡检器", _cmd_github),
+    "gitee": ("Gitee 建仓/转公开/发发行版（权威端）；与 github 子命令配对成双核", _cmd_gitee),
+    "publish": ("PyPI 发版链路：check/build/verify/upload/release —— 双产物是硬判据", _cmd_publish),
     "secrets-scan": ("离线凭据扫描：21 条高精度规则 + 按字符集分档的熵闸（不需要 gitleaks 二进制）",
                      _cmd_secrets_scan),
     "facts": ("机器事实：采集本机（盘/运行时/工具链）＋ 校验分区文件断言（measure / verify）",

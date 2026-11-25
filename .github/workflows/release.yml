@@ -23,10 +23,16 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: 构建 sdist + wheel
+      # 走**与本地同一条命令**（`allin-governance publish`），而不是再写一套 build 步骤：
+      # 2.1.0 的坑正是「CI 有双产物判据、人手动发版绕过它」。命令层与 CI 层用同一入口，
+      # 才不存在「两条路、一条有判据一条没有」。
+      - name: 发版判据（版本三处一致 + 双产物 + 各装一次）
         run: |
           python -m pip install --quiet --upgrade pip build twine
-          python -m build
+          python -m pip install --quiet -e .
+          allin-governance publish check
+          allin-governance publish build
+          allin-governance publish verify
 
-      - name: 放行前校验（版本一致 / dist 干净 / sdist 自包含 / 双产物各装一次）
+      - name: 放行前校验（独立实现的第二道：sdist 自包含细节）
         run: python scripts/release_preflight.py --install

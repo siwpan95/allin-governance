@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allin-governance"
-version = "2.1.0"
+version = "2.2.0"
 description = "工作区治理中枢的公共核：可执行门禁 + 文档枢纽契约 + 仓库体检 + 机器事实采集"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -65,6 +65,9 @@ packages = [
   "allin_governance._gatesuite.baseline",
   "allin_governance._gatesuite.preset",
   "allin_governance._gatesuite.ledger",
+  # 发布链路（2.2.0 收拢）：gitee 建仓 + pypi 发版；github 已在 _github/
+  "allin_governance._gitee",
+  "allin_governance._publish",
   "allin_governance._toolkit",
   "allin_governance._toolkit.pytrunner",
   "allin_governance._github",

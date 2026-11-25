@@ -1,5 +1,29 @@
 # 变更记录
 
+## 2.2.0 —— 2026-11-25
+
+**发布链路收拢：`gitee` / `github` / `publish` 三个子命令 + `PUBLISHING.md`。**
+
+背景是全哥一句话：「gitee、github、pypi 这些建仓推送与发版的内容建议收拢到一起，
+并补上对应 readme。不然你那句『下次发版请用 release.sh --upload』大概就是形同虚设 ——
+**就好像纪律没有门禁支持，就会被当作结果而不是依据**。」
+
+### 新增
+
+- `gitee` 子命令：`_gitee/release.py`（从 allin 仓 `tools/gitee_release.py` 迁入）。
+  建仓/转公开/发发行版，与 `github` 配对成「Gitee 权威 → 本地 → GitHub 镜像」双核。
+- `publish` 子命令：`_publish/pypi.py`，四道可独立执行的判据 ——
+  `check`（版本三处一致）/ `build`（**双产物**）/ `verify`（**各装一次**）/ `upload`，
+  外加 `release` 一条龙。
+- `PUBLISHING.md`：三条链路的完整命令 + 判据表 + **6 条真踩过的坑**。
+
+### 为什么这能防住 2.1.0 那种漏
+
+2.1.0 漏 sdist 不是「不知道要 sdist」，而是**判据存在但被绕过**：
+CI 里写着「构建 sdist + wheel」，人手打 `build --wheel` 上传。
+现在 `publish build` / `publish upload` **在代码里硬要求双产物**，
+且 CI 改走**同一条命令** —— 命令层与 CI 层不再存在「一条有判据、一条没有」。
+
 ## 2.1.0 —— 2026-11-25
 
 **新增判据 D19：共有月账不按机归属。**
