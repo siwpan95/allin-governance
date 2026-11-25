@@ -1,5 +1,28 @@
 # 变更记录
 
+## 2.3.1 —— 2026-11-25
+
+**判据的读取路径跟上提仓**：不再假设"套件在本仓"。
+
+### 修复
+
+| 判据 / 组件 | 病 | 修法 |
+| --- | --- | --- |
+| `g00-meta` | 43 条阻断 = 20 条 `registry: script not found` + 23 条 untracked-support。它按仓内布局认 `registry.parent.parent/script`，而编排层早已会剥 `governance/` 前缀 | 新增 `resolve_gate_script()`（仓内优先、包内兜底）；`untracked_support()` 剪枝 `.venv/.tox/.nox/venv/site-packages/dist-packages/node_modules/__pycache__` 及任一祖先含 `pyvenv.cfg` 的子树，**跳过数打进 note**（排除不许静默） |
+| `g18-exceptions` | 例外台账随套件进包后 `不可读`；baseline / ledger / known-gaps 同理 | `locate()` 仓内优先、包内兜底；标签写包内相对名而非绝对路径（绝对路径换机即变假漂移） |
+| `g19-docs-refs` | 它逼本机 agent 去改他机分区文件，唯一绿法是违反铁律 6 | 按 `SPEC-001:135`「门禁同源」：`docs/事实源/机器/<stem>/` 且 `stem != hostname` 时 path-ref 与 command-target 一律豁免并计入 `exempted`（不静默跳过）；baseline 改以仓根为基准 |
+| `g15-docs-contract` | `--root` 默认值在 argparse 构造时就上溯，传了也照旧可能 exit 3 | 改惰性解析 |
+| `run.ts` / `govlib` | 无 `--root` 透传，仓根与解释器靠 `.git` 上溯与 `cwd` 猜 | 新增 `resolve_root()`（显式 root 绝不被上溯覆盖）；`--root` 逐道下发、子进程 `cwd=root`、解释器优先 `<root>/.venv`；用法错 2 / 环境错 3 分离 |
+| `_repocheck/rules_gate` | `has_gate_suite` 只认 `tools/gate/governance`，在内核仓跑 `--only-gates` 时 20 条门禁规则一条都不挂 —— 命令照常返回、健康分照给，**没验还报绿** | 补包内布局识别 |
+
+### 自证
+
+`--selfcheck-all` 20/20；`g00` 12/4 → 13/5、`g18` 4/1 → 7/2。新增成对用例：异机事实**必须放过**、本机漂移**必须判红**（只证前者等于只证豁免存在，没证它没越界）。
+
+### 已知
+
+README 的"当前版本"自 2.1.0 起未更新（写 `2.0.2`），本版一并订正。`release_preflight` 的五处一致性检查一直存在，但 2.1–2.3 三次发版没有跑到它 —— 判据存在不等于判据被执行。
+
 ## 2.3.0 —— 2026-11-25
 
 **文本分类骨架：TextCNN 打底，规则降级**（全哥定的结构）。

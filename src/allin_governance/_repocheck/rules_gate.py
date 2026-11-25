@@ -49,6 +49,33 @@ if TYPE_CHECKING:  # pragma: no cover
 GATE_GATES_DIR = "tools/gate/governance/gates"
 GATE_RUNTIME = "tools/gate/governance/runtime/govlib.py"
 
+#: 套件的**两种**落点（相对项目根），每种都要求「gates 目录 + runtime/govlib.py」齐备：
+#:
+#: * 消费仓形态：套件被放在 ``tools/gate/governance/`` 下（提仓前的 allin 就是这种）；
+#: * 本仓形态（2026-11-25 提仓后）：**本仓自己就是套件**，源码在
+#:   ``src/allin_governance/_gatesuite/``。
+#:
+#: 只认第一种的后果是：在套件自己的仓里跑 ``--only-gates``，``has_gate_suite`` 判假，
+#: 于是 20 条门禁规则一条都不挂 —— 命令照常返回、健康分照常给出、日志里
+#: 「门禁」二字都不出现。那不是跳过，那是**没验还报绿**（本仓最忌讳的形态）。
+GATE_LAYOUTS: tuple[tuple[str, str], ...] = (
+    (GATE_GATES_DIR, GATE_RUNTIME),
+    ("src/allin_governance/_gatesuite/gates", "src/allin_governance/_gatesuite/runtime/govlib.py"),
+)
+
+
+def gate_layout(root: Path) -> tuple[str, str] | None:
+    """返回本仓套件的 ``(gates 目录, govlib 路径)``；没有套件则返回 ``None``。"""
+    for gates_dir, runtime in GATE_LAYOUTS:
+        if (root / gates_dir).is_dir() and (root / runtime).is_file():
+            return gates_dir, runtime
+    return None
+
+
+def has_gate_suite(root: Path) -> bool:
+    """该仓是否自带治理门禁套件（决定这一族规则挂不挂）。"""
+    return gate_layout(root) is not None
+
 #: 单道门的超时（秒）。20 道实测总时长 60–70 s，单道留足余量。
 GATE_TIMEOUT = 240
 
@@ -58,7 +85,7 @@ DETAIL_CHARS = 220
 
 def has_gate_suite(root: Path) -> bool:
     """该仓是否自带治理门禁套件（决定这一族规则挂不挂）。"""
-    return (root / GATE_GATES_DIR).is_dir() and (root / GATE_RUNTIME).is_file()
+    return gate_layout(root) is not None
 
 
 def _gate_python() -> str:
@@ -78,8 +105,15 @@ def _gate_registry(root: Path) -> dict[str, dict]:
     ``--no-profile``（否则它按宿主 profile 判，在 CI/异机上误红）。少了这一步，
     repocheck 会报一条 run.ts 同批次里并不存在的红 —— 两个入口结论不一致，
     比没有第二个入口更糟。
+
+    registry 的位置随套件落点走（``<gates 目录的上一级>/registry.json``）：
+    两种布局都有这一份，写死仓内那一条会让本仓形态读不到注册表 ⇒
+    ``--no-profile`` 不会传给 g14 ⇒ 两个入口的结论又分叉。
     """
-    path = root / "tools/gate/governance/registry.json"
+    layout = gate_layout(root)
+    if layout is None:
+        return {}
+    path = (root / layout[0]).parent / "registry.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -106,10 +140,14 @@ def _tail(text: str) -> str:
 
 def run_gate(root: Path, script: str, gate_id: str = "", meta: dict | None = None) -> CheckResult:
     """跑一道门，把 CLI 退出码翻译成 CheckResult。"""
-    gate = root / GATE_GATES_DIR / script
+    layout = gate_layout(root)
+    if layout is None:
+        # 没套件却被点名跑门禁：不能安静地返回「通过」（见 GATE_LAYOUTS 的说明）。
+        return CheckResult.bad("本仓不含治理套件，无法跑门禁（既非 tools/gate/governance 也非 _gatesuite 布局）")
+    gate = root / layout[0] / script
     if not gate.is_file():
         # 套件在、这道门不在 ⇒ 配置与实现不一致，是真实缺陷，不许静默跳过。
-        return CheckResult.bad(f"门禁脚本缺失：{GATE_GATES_DIR}/{script}")
+        return CheckResult.bad(f"门禁脚本缺失：{layout[0]}/{script}")
 
     cmd = [_gate_python(), str(gate), "--root", str(root), "--quiet",
            *_gate_args(meta if meta is not None else {})]

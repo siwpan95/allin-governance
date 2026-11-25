@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import shutil
 import stat
 import subprocess
@@ -108,6 +109,42 @@ def repo_root(start: Path | None = None) -> Path:
         f"no git work tree above {current}; run the gate from inside the repository "
         "or pass --root <work-tree>"
     )
+
+
+def resolve_root(value: str | None = None) -> Path:
+    """The work tree to judge: an explicit ``--root`` wins, otherwise discovery.
+
+    Why this exists (2026-11-25, package extraction): the suite now runs from
+    *inside an installed package*, so ``--root`` is the only way to say which
+    repository is being judged. Walking up from ``GOVERNANCE_DIR`` still works
+    when the package sits in a venv inside that repository, but it silently
+    answers a different question once the package lives anywhere else (a global
+    install, a shared tool env, another project's venv) -- and "silently judges
+    the wrong tree" is the worst failure mode a gate has.
+
+    A caller that passes ``--root`` gets exactly that directory; it is never
+    re-discovered, and a missing/non-directory value is a usage error (exit 2)
+    rather than an environment error (exit 3): the operator mistyped, the
+    environment is fine.
+    """
+    if value is None or str(value).strip() == "":
+        return repo_root()
+    candidate = Path(str(value)).expanduser().resolve()
+    if not candidate.is_dir():
+        raise GateError(f"--root 不是目录：{value}", EXIT_USAGE)
+    return candidate
+
+
+def current_machine() -> str:
+    """Current hostname, lowercased.
+
+    The single implementation of "which machine am I": ``g20-facts`` judges the
+    partition file whose stem equals this, ``g19-docs-refs`` exempts every other
+    machine's file (SPEC-001 铁律 6「门禁同源」—— 机器事实的「写权限」与
+    「校验范围」都按 hostname 收敛). Two copies of this one-liner is exactly how
+    the two gates would drift apart, so it lives here.
+    """
+    return platform.node().lower()
 
 
 def run_git_result(args: list[str], root: Path) -> subprocess.CompletedProcess[bytes]:
@@ -328,6 +365,42 @@ def add_baseline_argument(parser) -> None:
     parser.add_argument("--no-baseline", action="store_true", help="ignore the baseline and judge everything")
     parser.add_argument("--write-baseline", action="store_true", help="freeze current findings as the baseline")
     parser.add_argument("--list-all", action="store_true", help="print every finding, not just new ones")
+
+
+#: 基线在**被判的仓**里的落点（相对仓根）：消费仓把套件放在 tools/gate/governance 时的位置。
+BASELINE_SUBTREE = "tools/gate/governance/baseline"
+#: 同一份基线在**本仓**（源码在 src/allin_governance/_gatesuite 下）里的位置。
+BASELINE_SUBTREE_PACKAGE = "src/allin_governance/_gatesuite/baseline"
+
+
+def baseline_path(root: Path, gate_id: str, explicit: str | None = None) -> Path:
+    """基线的落点：显式 ``--baseline`` > 仓内既有 > 仓内默认落点（待建）。
+
+    为什么基准必须是**仓根**、不能是包的安装位置（2026-11-25 提仓后实测的缺陷）：
+    基线棘轮的全部含义是「这些存量已复核、冻结在**这份提交**里」。基线一旦解析到
+    ``site-packages``，它就不在任何 git 索引里 —— 不可评审、不可版本化、换台机器
+    装同一个版本却可能看到另一份冻结集合。棘轮于是只剩「有个文件被读了」，
+    失去了「接受的风险被记录过」这个唯一价值。
+
+    两种仓内落点都认（与 ``g00`` 的脚本解析、``g18`` 的台账定位同一口径），
+    都不存在时返回「仓内默认落点」——由 ``--write-baseline`` 去建，而不是
+    悄悄写进包里。
+    """
+    if explicit:
+        return Path(explicit)
+    for subtree in (BASELINE_SUBTREE, BASELINE_SUBTREE_PACKAGE):
+        candidate = root / subtree / f"{gate_id}.txt"
+        if candidate.is_file():
+            return candidate
+    return root / BASELINE_SUBTREE / f"{gate_id}.txt"
+
+
+def display_path(path: Path, root: Path) -> str:
+    """报告用路径：仓内给相对路径，仓外退回绝对路径（只用于显示，不用于判断）。"""
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 # --------------------------------------------------------------------------- #

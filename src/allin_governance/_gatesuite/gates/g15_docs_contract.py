@@ -576,8 +576,8 @@ def selfcheck() -> int:
 # ---------------------------------------------------------------- CLI
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="docs hub index contract gate (SPEC-005)")
-    ap.add_argument("--root", default=govlib.repo_root(),
-                    help="仓根（默认由 .git 反推，布局无关）")
+    ap.add_argument("--root", default=None,
+                    help="仓根（默认由 .git 反推，布局无关；显式给出时不再上溯）")
     ap.add_argument("--selfcheck", action="store_true", help="跑真实破坏/干净用例自证")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--baseline", action="store_true", help="启用基线棘轮（默认启用）")
@@ -587,6 +587,12 @@ def main(argv=None) -> int:
     ap.add_argument("--no-aliases", action="store_true", help="跳过 D6 别名校验（非 Windows CI 用）")
     args = ap.parse_args(argv)
 
+    # 2026-11-25：默认值改为**惰性**求值。此前 `default=govlib.repo_root()` 在
+    # argparse 构造时就上溯一次，于是即便调用方已经显式传了 --root，包也必须
+    # 「上面某一层有 .git」才能走到解析之后 —— 装到仓外的包里跑就必定 exit 3，
+    # 与 `--root` 的存在意义（由调用方指定被判的仓）直接冲突。
+    if not args.root:
+        args.root = str(govlib.repo_root())
     if not os.path.isdir(args.root):
         print("ENV ERROR: root 不存在：%s" % args.root)
         return EXIT_ENV

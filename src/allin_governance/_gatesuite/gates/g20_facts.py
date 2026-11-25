@@ -108,7 +108,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
 import re
 import sys
 import tempfile
@@ -317,9 +316,8 @@ def evaluate_staleness(stamp: str) -> str:
     return f"时点：{stamp}（{age} 天前，{'⚠ 超 ' + str(STALE_DAYS) + ' 天' if age > STALE_DAYS else '在窗口内'}）"
 
 
-def current_machine() -> str:
-    """Current hostname, lowercased (Windows hostnames are case-insensitive)."""
-    return platform.node().lower()
+# current_machine() 已提到 govlib：g19-docs-refs 也要按 hostname 收敛（铁律 6 门禁同源），
+# 一份实现一处维护，否则两者迟早漂开。见 govlib.current_machine()。
 
 
 def collect_machine_docs(target: Path) -> tuple[list[Path], list[tuple[str, Path, Path]]]:
@@ -356,7 +354,7 @@ def scan(root: Path) -> Report:
     if not target.is_dir():
         report.skip("no machine fact directory")
         return report
-    me = current_machine()
+    me = govlib.current_machine()
     docs, duplicates = collect_machine_docs(target)
     for stem, top_path, sub_path in duplicates:
         report.block("duplicate", top_path.name, 0,

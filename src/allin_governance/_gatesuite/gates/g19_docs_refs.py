@@ -73,6 +73,13 @@ SNAPSHOT_SCOPES = ("docs/记录/", "audit-fragments/")
 # it is describing output, not promising a file exists.
 RUNTIME_OUTPUT = ("tools/gate/audit/",)
 
+#: SPEC-001 铁律 6 的「门禁同源」：机器事实的「写权限」与「校验范围」都按 hostname
+#: 收敛。异机分区文件既不该由本机改写（铁律 6 核心禁令），它的 path-ref / command
+#: 也就不在本门禁管辖内。g20-facts 早就是这么做的（只校验 stem == hostname 那份），
+#: g19 此前漏了这条 —— 于是它逼本机 agent 去改他机文件，唯一的绿法就是违反铁律 6。
+#: 一个"只能靠违规满足"的门禁是坏门禁。
+MACHINE_FACTS = "docs/事实源/机器/"
+
 # SPEC-005 §121 的状态闭集：生效 / 草案 / 冻结 / 已废弃。
 DEPRECATED = "已废弃"
 STATUS = re.compile(r"\*\*状态\*\*\s*\*{0,2}([^\s*｜|]+)")
@@ -109,10 +116,17 @@ def declared_status(text: str) -> str:
     return ""
 
 
-def corpus(root: Path, files: list[str]) -> tuple[list[str], list[str]]:
-    """(judged markdown, exempt markdown-with-reason) as repository-relative paths."""
+def corpus(root: Path, files: list[str]) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+    """(judged, snapshot-markdown, foreign-machine docs) as repository-relative paths.
+
+    ``foreign`` carries ``(rel, stem)`` so the caller can report *which* machine a
+    skipped file belongs to instead of dropping it silently: a gate that forgets
+    what it did not look at cannot be trusted about what it did.
+    """
+    me = govlib.current_machine()
     judged: list[str] = []
     exempt: list[str] = []
+    foreign: list[tuple[str, str]] = []
     for rel in files:
         if not rel.endswith(".md"):
             continue
@@ -121,8 +135,28 @@ def corpus(root: Path, files: list[str]) -> tuple[list[str], list[str]]:
         parts = rel.split("/")
         if len(parts) > 2 and parts[0] == "docs" and parts[1] in ALIAS_DIRS:
             continue
+        stem = machine_stem(rel)
+        if stem is not None and stem.lower() != me:
+            foreign.append((rel, stem))
+            continue
         (exempt if rel.startswith(SNAPSHOT_SCOPES) else judged).append(rel)
-    return judged, exempt
+    return judged, exempt, foreign
+
+
+def machine_stem(rel: str) -> str | None:
+    """The machine a partition doc belongs to, or None when it is not one.
+
+    Both layouts are recognised: the 2026-11-06 one-folder-per-machine form
+    ``docs/事实源/机器/<STEM>/…`` and the older flat ``docs/事实源/机器/<STEM>.md``.
+    The *folder* names the machine, not the file: month ledgers and attachments
+    under the same folder are equally that machine's business.
+    """
+    if not rel.startswith(MACHINE_FACTS):
+        return None
+    head = rel[len(MACHINE_FACTS):].split("/")[0]
+    if head.endswith(".md"):
+        head = head[:-3]
+    return head or None
 
 
 def resolves(root: Path, doc: str, spec: str) -> bool:
@@ -188,8 +222,11 @@ def run(root: str, args: argparse.Namespace) -> Report:
     base = Path(root)
     report = Report(title=TITLE)
     files = govlib.tracked_files(base)
-    judged, snapshots = corpus(base, files)
+    judged, snapshots, foreign = corpus(base, files)
     report.scanned = len(judged)
+    # 异机分区文件：豁免但记数（skipped ≠ pass，也别静默丢弃）。
+    for _rel, stem in foreign:
+        report.exempt(f"other-machine facts ({stem}) — SPEC-001 铁律 6 门禁同源", 1)
     for rel in judged:
         head = read_text(base / rel) or ""
         if declared_status(head) == DEPRECATED:
@@ -231,16 +268,36 @@ DEPRECATED_DOC = """# SPEC-901 fixture (deprecated)
 本文描述的对象已退役，正文中这条路径指向已删除的东西：`tools/ghost.py`
 """
 
+# 一台机器的分区文件：正文引一条"本机不存在"的脚本。他机那份必须被豁免，
+# 本机那份必须被判 —— 一个把两边都放过的豁免，比没有豁免更糟。
+MACHINE_DOC = """# {stem} 分区
+
+```bash
+python tools/ghost.py --root .
+```
+
+见 `docs/GHOST.md`。
+"""
+
 SELFCHECK_CASES = [
     ("clean", True),
     ("command-missing", False),
     ("npm-missing", False),
     ("path-missing", False),
     ("deprecated-spec", True),
+    # SPEC-001 铁律 6「门禁同源」的两面：异机豁免，本机照判。
+    ("other-machine-facts", True),
+    ("own-machine-drift", False),
 ]
 
 
 def build_fixture(kind: str, sandbox: govlib.Sandbox) -> None:
+    if kind in ("other-machine-facts", "own-machine-drift"):
+        # 他机用一个人造 stem（绝不会等于本机 hostname）；本机用真 hostname，
+        # 用来证明豁免没有把手伸到自己身上。
+        stem = "DESKTOP-OTHERBOX" if kind == "other-machine-facts" else govlib.current_machine()
+        sandbox.write(f"docs/事实源/机器/{stem}/{stem}.md", MACHINE_DOC.format(stem=stem))
+        return
     script = "real" if kind != "command-missing" else "ghost"
     script_name = "check" if kind != "npm-missing" else "nosuchscript"
     doc = "INDEX.md" if kind != "path-missing" else "GHOST.md"
@@ -287,18 +344,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ENV ERROR: root 不存在：{root}")
         return EXIT_ENV
     report = run(str(root), args)
-    baseline_path = Path(args.baseline) if args.baseline else (
-        govlib.GOVERNANCE_DIR / "baseline" / "g19-docs-refs.txt")
+    # 2026-11-25：基线以**仓根**为基准，不再以包的安装位置为基准。
+    # 旧写法 `govlib.GOVERNANCE_DIR / "baseline" / …` 在跑已安装的包时指向
+    # site-packages：基线不进 git ⇒ 不可评审、不可版本化，棘轮能力整体失效。
+    baseline_path = govlib.baseline_path(root, GATE, args.baseline)
     baseline = govlib.Baseline(baseline_path).load()
     if args.write_baseline:
         baseline.write(report.findings)
-        print(f"wrote baseline {baseline_path} ({len(report.findings)} key(s))")
+        # 打印绝对路径：这是「写到哪去了」的唯一凭据，相对路径不足以证明落在仓内。
+        print(f"wrote baseline {baseline_path.resolve()} ({len(report.findings)} key(s))")
         return EXIT_OK
-    new = list(report.findings) if args.no_baseline else baseline.filter_new(report.findings)
+    missing_baseline = not baseline_path.is_file()
+    caveat = ""
+    if missing_baseline:
+        # 缺失不许静默（本仓纪律：SKIP ≠ pass，没有棘轮也不许装作有）。
+        # 退化为**全量判定**：漏掉基线不该让门禁变松，只该让它变严 + 说出来。
+        caveat = (f"baseline 缺失：{govlib.display_path(baseline_path, root)} 不存在 ⇒ 棘轮失效，"
+                  f"本次按全量判定（不影响判红；要冻结存量用 --write-baseline）")
+        report.note(caveat)
+    new = list(report.findings) if (args.no_baseline or missing_baseline) else baseline.filter_new(report.findings)
     shown = Report(title=report.title, findings=report.findings if args.list_all else new,
                    exempted=report.exempted, skipped=report.skipped, notes=report.notes,
                    scanned=report.scanned)
     print(shown.render().splitlines()[0] if args.quiet else shown.render())
+    if caveat and args.quiet:
+        # --quiet 只留首行；棘轮失效这件事不能被折掉，单独补一行到 stderr。
+        print(f"  note: {caveat}", file=sys.stderr)
     return report.exit_code(new)
 
 

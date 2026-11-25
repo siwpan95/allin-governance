@@ -63,6 +63,26 @@ SELFCHECK_TIMEOUT_SECONDS = 600
 GATE_SCRIPT_RE = re.compile(r"^(g\d{2})_.+\.py$")
 #: registry id 形如 ``g00-meta``。
 GATE_ID_RE = re.compile(r"^g(\d{2})-")
+#: registry 的 ``script`` 字段用**仓内布局**书写（``governance/gates/x.py``）。
+#: 包内形态没有这一层 ``governance/``（``gates/`` 与 registry.json 同级），
+#: 与 run.ts 的 ``IN_PACKAGE`` 分支同一口径。见 ``resolve_gate_script()``。
+PACKAGED_SCRIPT_PREFIX = "governance/"
+
+#: 依赖安装面 / 解释器环境 / 解释器缓存：这些目录里的 ``*.py`` 不是「本仓支撑模块」，
+#: 而是**某个已安装的包**或构建副产物。判据的对象是仓内支撑模块 ——
+#: 把它们算进来等于把「装在哪」误判成「漏提交」。
+#:
+#: 为什么必须有这条排除（2026-11-25 实测，套件提仓后第一现场）：
+#: run.ts 走的是 ``.venv`` 里**已安装的包**，于是
+#: ``.venv/Lib/site-packages/allin_governance/_gatesuite/gates/*.py`` 在盘上存在、
+#: 却不在本仓 git index 里 ⇒ 20 道门禁被判成 20 条 untracked-support，
+#: 而它们一条也没漏提交。判据本身没错，错在把安装位置当成了支撑文件。
+#: 排除只对**安装面**生效：仓内某个目录被 ``.gitignore`` 吞掉的模块（判据真正要抓的
+#: 那个缺陷）仍照旧判红 —— 见 selfcheck 里的两组负对照。
+ENV_DIR_NAMES = frozenset({
+    ".venv", "venv", ".tox", ".nox",
+    "site-packages", "dist-packages", "node_modules", "__pycache__",
+})
 #: 编号缺口白名单：g02 是本仓既有设计缺口（registry.json 与 docs/INDEX.md 均
 #: 明确登记「编号缺 g02」），不是遗漏。新增缺号必须在此显式声明，否则一律判红。
 KNOWN_NUMBERING_GAPS = frozenset({2})
@@ -95,28 +115,119 @@ def run_gate_script(python: str, script: Path, args: list[str], root: Path) -> t
     return completed.returncode, text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def untracked_support(root: Path, registry_path: Path, tracked: set[str]) -> list[str]:
+def resolve_gate_script(registry_path: Path, declared: str) -> Path:
+    """把 registry 的 ``script`` 解析成盘上路径：仓内布局优先，包内布局兜底。
+
+    2026-11-25 提仓后，**同一份** registry.json 要服务两种布局：
+
+    * 仓内形态：``<root>/tools/gate/governance/registry.json``，
+      ``script = "governance/gates/x.py"`` ⇒ ``registry.parent.parent / declared``
+    * 包内形态：``<site-packages>/allin_governance/_gatesuite/registry.json``，
+      ``gates/`` 就在 registry 旁边 ⇒ ``registry.parent / declared`` 去掉前缀
+
+    此前只认第一种，于是「跑已安装的包」时每道门禁都报
+    ``script not found at governance/gates/x.py``（20 条）—— 判据本身没错，
+    错在把「仓内布局」当成了唯一布局。这里只做**兜底**不做替换：
+    仓内形态存在时行为与改动前逐字节一致。
+    """
+    repo_form = registry_path.parent.parent / declared
+    if repo_form.is_file():
+        return repo_form
+    if declared.startswith(PACKAGED_SCRIPT_PREFIX):
+        packaged = registry_path.parent / declared[len(PACKAGED_SCRIPT_PREFIX):]
+        if packaged.is_file():
+            return packaged
+    # 两种布局都没有：返回仓内形态，由调用方如实判「script not found」。
+    return repo_form
+
+
+def _in_env(path: Path) -> bool:
+    """``path`` 是否位于依赖安装面 / 虚拟环境里（判据不该把这类 .py 当支撑模块）。
+
+    两条判据合起来才够：
+      * 路径段里有 ``site-packages`` / ``node_modules`` / ``__pycache__`` 等安装面名字
+        （覆盖全局安装，那种环境没有 ``pyvenv.cfg``）；
+      * 任一祖先目录带 ``pyvenv.cfg``（覆盖任意命名的虚拟环境，``env/`` / ``.env/`` 也算，
+        名字列表永远列不全，环境标记文件才是可判据的事实）。
+    """
+    if any(part in ENV_DIR_NAMES for part in path.parts):
+        return True
+    return any((candidate / "pyvenv.cfg").is_file()
+               for candidate in (path, *path.parents))
+
+
+def untracked_support(root: Path, registry_path: Path,
+                      tracked: set[str]) -> tuple[list[str], int]:
     """Governance Python files present on disk but absent from the index.
 
     An ignore rule can hide a support module: the repository-wide ``lib/`` rule
     already swallowed one gate runtime, and `git status` stays silent about
     ignored files, so the loss is invisible until a fresh clone fails. The
     governance directory is derived from the registry's own location, so the
-    check tracks wherever the subtree is placed (it now lives under
-    tools/gate/governance/ rather than at the repo root).
+    check tracks wherever the subtree is placed.
+
+    Returns ``(missing, skipped)``. ``skipped`` counts ``.py`` files this scan
+    deliberately did not judge because they live on an install surface (see
+    ``_in_env``) or outside the repository being judged; the caller prints the
+    count so an exclusion is never silent.
+
+    2026-11-25: the subtree is now usually an **installed package**, so the
+    install-surface exclusion is what keeps this gate from reporting the package
+    as un-committed source. Directories are pruned while walking rather than
+    filtered afterwards: a venv holds enough files that walking it is a real cost
+    inside a gate that runs on every aggregate run.
     """
     base = registry_path.parent
     if not base.is_dir():
-        return []
-    return sorted(path.relative_to(root).as_posix() for path in base.rglob("*.py")
-                  if path.relative_to(root).as_posix() not in tracked)
+        return [], 0
+    missing: list[str] = []
+    skipped = 0
+    stack = [base]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir() and not entry.is_symlink():
+                if entry.name in ENV_DIR_NAMES or (entry / "pyvenv.cfg").is_file():
+                    # 整棵剪掉，但如实计数（exclusion 不许静默）。
+                    skipped += sum(1 for _ in entry.rglob("*.py"))
+                    continue
+                stack.append(entry)
+                continue
+            if entry.suffix != ".py":
+                continue
+            if _in_env(entry):
+                skipped += 1
+                continue
+            relative = _rel_or_none(entry, root)
+            if relative is None:
+                # 不在被判的仓里（全局安装的包）⇒ 不是「本仓漏提交」。
+                skipped += 1
+                continue
+            if relative not in tracked:
+                missing.append(relative)
+    return sorted(missing), skipped
+
+
+def _rel_or_none(path: Path, root: Path) -> str | None:
+    """``path`` 相对 ``root`` 的 POSIX 路径；在 ``root`` 之外则返回 ``None``。
+
+    ``Path.relative_to`` 在跨盘/跨树时抛 ``ValueError``。判据现在允许 ``--root``
+    指向任意仓，而治理子树可能在那个仓之外（包被装到别处），所以这里必须能回答
+    「这个文件不属于本仓」，而不是让整道门禁崩掉。
+    """
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return None
 
 
 def _rel(path: Path, root: Path) -> str:
-    try:
-        return path.relative_to(root).as_posix()
-    except ValueError:
-        return path.as_posix()
+    """报告用路径：仓内给相对路径，仓外退回绝对路径（只用于显示，不用于判断）。"""
+    return _rel_or_none(path, root) or path.as_posix()
 
 
 def check_gate_inventory(root: Path, registry_path: Path, identifiers: set[str],
@@ -236,60 +347,65 @@ def inspect(root: Path, registry_path: Path, rules_path: Path, python: str) -> R
     # 再逐条审 registry 里登记过的门禁。
     check_gate_inventory(root, registry_path, set(identifiers), report)
     check_numbering(identifiers, registry, registry_path, root, report)
-    for missing in untracked_support(root, registry_path, tracked):
+    missing_support, skipped_support = untracked_support(root, registry_path, tracked)
+    for missing in missing_support:
         report.block("untracked-support", missing, 0,
                      f"{missing}: present on disk but absent from the git index (an ignore rule can hide it)")
+    if skipped_support:
+        # 排除必须留痕：否则「少了 20 条」与「少了 20 个真缺陷」在日志里长得一样。
+        report.note(f"untracked-support: 跳过 {skipped_support} 个位于依赖安装面/虚拟环境"
+                    f"（{' / '.join(sorted(ENV_DIR_NAMES))}）或本仓之外的 .py —— 它们不是本仓支撑模块")
     rules_text = rules_path.read_text(encoding="utf-8") if rules_path.is_file() else ""
     if not rules_text:
-        report.block("registry", str(rules_path.relative_to(root)), 0, "RULES.md is missing or empty")
+        report.block("registry", _rel(rules_path, root), 0, "RULES.md is missing or empty")
 
     for entry in entries:
         if not isinstance(entry, dict):
-            report.block("registry", str(registry_path.relative_to(root)), 0, f"entry is not an object: {entry!r}")
+            report.block("registry", _rel(registry_path, root), 0, f"entry is not an object: {entry!r}")
             continue
         identifier = str(entry.get("id", "<missing id>"))
         missing = [field for field in REQUIRED_FIELDS if field not in entry]
         if missing:
-            report.block("registry", str(registry_path.relative_to(root)), 0,
+            report.block("registry", _rel(registry_path, root), 0,
                          f"{identifier}: missing field(s) {', '.join(missing)}")
             continue
         if not entry["rules"]:
-            report.block("registry", str(registry_path.relative_to(root)), 0, f"{identifier}: declares no rules")
+            report.block("registry", _rel(registry_path, root), 0, f"{identifier}: declares no rules")
         # Registry script paths are expressed relative to the governance subtree's
         # parent (tools/gate) — matching the base run.ts uses to resolve gate
         # scripts. Derive it from the *registry file* we were handed, not the module
         # constant GOVERNANCE_DIR: the meta gate's own --selfcheck runs against a
         # Sandbox() copy whose registry lives under a temp dir, so a fixed constant
         # would point at the real tree and the fixture scripts would never resolve.
-        # registry_path.parent.parent == tools/gate in the real run, == sandbox.path
-        # in the self-check, so both scenarios resolve correctly.
-        script = registry_path.parent.parent / str(entry["script"])
+        # 2026-11-25：提仓后同一份 registry 还要服务**包内布局**（gates/ 就在
+        # registry 旁边），两种基址由 resolve_gate_script() 统一处理。
+        script = resolve_gate_script(registry_path, str(entry["script"]))
         if not script.is_file():
-            report.block("registry", str(registry_path.relative_to(root)), 0,
+            report.block("registry", _rel(registry_path, root), 0,
                          f"{identifier}: script not found at {entry['script']}")
             continue
         report.scanned += 1
 
         if identifier not in rules_text:
-            report.block("rules-map", str(rules_path.relative_to(root)), 0,
+            report.block("rules-map", _rel(rules_path, root), 0,
                          f"{identifier}: not documented in RULES.md")
 
         code, help_text = run_gate_script(python, script, ["--help"], root)
         if code != 0:
-            report.block("contract", str(script.relative_to(root)), 0, f"{identifier}: --help exited {code}")
+            report.block("contract", _rel(script, root), 0, f"{identifier}: --help exited {code}")
             continue
         for switch in REQUIRED_SWITCHES:
             if switch not in help_text:
-                report.block("contract", str(script.relative_to(root)), 0,
+                report.block("contract", _rel(script, root), 0,
                              f"{identifier}: does not expose {switch}")
         # A gate that claims to read the host profile must be able to stop doing so,
         # because the aggregate runs repository-only.
         if entry.get("profileProbe") is True and "--no-profile" not in help_text:
-            report.block("contract", str(script.relative_to(root)), 0,
+            report.block("contract", _rel(script, root), 0,
                          f"{identifier}: declares profileProbe but does not expose --no-profile")
 
         if entry.get("selfcheck") is not True:
-            report.block("contract", str(script.relative_to(root)), 0,
+            report.block("contract", _rel(script, root), 0,
                          f"{identifier}: registry does not claim a self-check")
             continue
         # 平台不匹配的门禁不能要求它在**本机**自证。
@@ -309,10 +425,14 @@ def inspect(root: Path, registry_path: Path, rules_path: Path, python: str) -> R
             report.skip(f"{identifier}: not applicable on {CURRENT_PLATFORM} "
                         f"(declares {','.join(str(p) for p in platforms)})")
             continue
-        code, output = run_gate_script(python, script, ["--selfcheck"], root)
+        # 2026-11-25：门禁自检跑在**同一棵被判的仓**上。``--root`` 只在对方的
+        # --help 里真的出现时才传（契约里它还不是 REQUIRED_SWITCHES，出厂骨架
+        # 未必带它），这样既让真实门禁不靠包的位置猜仓根，又不会给合法骨架造假红。
+        root_flag = ["--root", str(root)] if "--root" in help_text else []
+        code, output = run_gate_script(python, script, ["--selfcheck", *root_flag], root)
         match = SELFCHECK_LINE.search(output)
         if match is None:
-            report.block("selfcheck", str(script.relative_to(root)), 0,
+            report.block("selfcheck", _rel(script, root), 0,
                          f"{identifier}: self-check printed no SELFCHECK summary")
             continue
         payload = json.loads(match.group(1))
@@ -320,16 +440,16 @@ def inspect(root: Path, registry_path: Path, rules_path: Path, python: str) -> R
         clean = int(payload.get("clean", 0))
         misreports = int(payload.get("misreports", 0))
         if code != 0:
-            report.block("selfcheck", str(script.relative_to(root)), 0,
+            report.block("selfcheck", _rel(script, root), 0,
                          f"{identifier}: self-check exited {code}")
         if caught < 1:
-            report.block("selfcheck", str(script.relative_to(root)), 0,
+            report.block("selfcheck", _rel(script, root), 0,
                          f"{identifier}: self-check injected no defect it could catch")
         if clean < 1:
-            report.block("selfcheck", str(script.relative_to(root)), 0,
+            report.block("selfcheck", _rel(script, root), 0,
                          f"{identifier}: self-check proved nothing about clean input")
         if misreports != 0:
-            report.block("selfcheck", str(script.relative_to(root)), 0,
+            report.block("selfcheck", _rel(script, root), 0,
                          f"{identifier}: self-check reported {misreports} false positive(s)")
         if code == 0 and caught >= 1 and clean >= 1 and misreports == 0:
             report.note(f"{identifier}: contract ok (caught {caught}, clean {clean})")
@@ -446,6 +566,46 @@ def selfcheck() -> int:
         check.detects("a support module missing from the index",
                       any(finding.kind == "untracked-support" for finding in report.findings))
 
+    # 负对照 A（2026-11-25，第 141 行 ENV_DIR_NAMES 的正向证明）：
+    # 同一棵子树里，**安装面**上的 .py 是在盘不在 index 的，但它们不是本仓支撑模块，
+    # 判据必须闭嘴。不排除的话，跑已安装的包时 20 道门禁会各判一条 untracked-support
+    # （提仓后真实发生过）。
+    with govlib.Sandbox() as sandbox:
+        sandbox.write("governance/gates/ok_gate.py", good_gate)
+        sandbox.write("governance/.venv/Lib/site-packages/allin_governance/_gatesuite/gates/g01_paths.py",
+                      good_gate, track=False)
+        sandbox.write("governance/.venv/Lib/site-packages/allin_governance/_gatesuite/runtime/govlib.py",
+                      "# installed copy\n", track=False)
+        sandbox.write("governance/node_modules/pkg/helper.py", "# vendored dep\n", track=False)
+        sandbox.write("governance/__pycache__/cached.py", "# bytecode stand-in\n", track=False)
+        sandbox.write("governance/RULES.md", "# Rules\n\n| ok |\n")
+        sandbox.write("governance/registry.json", json.dumps({"version": 1, "gates": [
+            {"id": "ok", "title": "ok", "script": "governance/gates/ok_gate.py", "tier": "P0",
+             "rules": ["r1"], "platforms": ["nt", "posix"], "requires": ["python"], "selfcheck": True}]}) + "\n")
+        report = inspect(sandbox.path, sandbox.path / "governance/registry.json",
+                         sandbox.path / "governance/RULES.md", sys.executable)
+        check.quiet("files on an install surface (venv / site-packages / node_modules / __pycache__)",
+                    any(finding.kind == "untracked-support" for finding in report.findings))
+
+    # 负对照 B（同上，反向）：判据原本要抓的那个缺陷 —— **仓内目录被 .gitignore 吞掉**
+    # 而 git status 沉默 —— 必须照旧判红。这一条是为了证明「排除安装面」没有
+    # 顺手把整条判据关掉（上一轮吃过「判据空转还报绿」的亏）。
+    with govlib.Sandbox() as sandbox:
+        sandbox.write(".gitignore", "lib/\n")
+        sandbox.write("governance/gates/ok_gate.py", good_gate)
+        sandbox.write("governance/RULES.md", "# Rules\n\n| ok |\n")
+        sandbox.write("governance/registry.json", json.dumps({"version": 1, "gates": [
+            {"id": "ok", "title": "ok", "script": "governance/gates/ok_gate.py", "tier": "P0",
+             "rules": ["r1"], "platforms": ["nt", "posix"], "requires": ["python"], "selfcheck": True}]}) + "\n")
+        # governance/lib/x.py 被 .gitignore 的 `lib/` 规则吞掉：git add 会失败，
+        # 所以只能落盘不入库 —— 这正是「git status 沉默的丢失」。
+        sandbox.write("governance/lib/swallowed.py", "# hidden by the repo-wide lib/ rule\n", track=False)
+        report = inspect(sandbox.path, sandbox.path / "governance/registry.json",
+                         sandbox.path / "governance/RULES.md", sys.executable)
+        check.detects("a support module inside a .gitignore-swallowed directory",
+                      any(finding.kind == "untracked-support" and "swallowed.py" in finding.text
+                          for finding in report.findings))
+
     # H-7 反向：白名单只声明了 g02，故意缺 g01 ⇒ 必须判红。
     with govlib.Sandbox() as sandbox:
         sandbox.write("governance/gates/ok_gate.py", good_gate)
@@ -534,7 +694,9 @@ def main(argv: list[str]) -> int:
     # The governance subtree lives at <root>/tools/gate/governance/, so the work
     # tree root is discovered by walking up to the git toplevel (layout-independent)
     # rather than assuming a fixed number of parent segments.
-    root = Path(args.root).resolve() if args.root else govlib.repo_root()
+    # 2026-11-25：``--root`` 一旦给出就直接用，不再被上溯覆盖 —— 套件跑在已安装的
+    # 包里时，「正在判哪棵仓」只能由调用方说，不能由包的位置猜（见 resolve_root）。
+    root = govlib.resolve_root(args.root)
     registry = Path(args.registry) if args.registry else govlib.GOVERNANCE_DIR / "registry.json"
     rules = Path(args.rules) if args.rules else govlib.GOVERNANCE_DIR / "RULES.md"
     report = inspect(root, registry, rules, args.python)

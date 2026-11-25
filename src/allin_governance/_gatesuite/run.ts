@@ -21,7 +21,16 @@
  *   tsx governance/run.ts --tier P0,P1        # every gate at these tiers that can
  *                                             # run offline (context != push)
  *   tsx governance/run.ts --selfcheck-all     # prove every gate still detects
+ *   tsx governance/run.ts --root <work-tree>  # judge THIS tree, not the one the
+ *                                             # package happens to live in
  *   tsx governance/run.ts -- <args>           # forwarded to each gate
+ *
+ * `--root` exists because of the 2026-11-25 package extraction: the dispatcher now
+ * runs from inside an installed package, so "which repository is being judged"
+ * cannot be derived from where this file sits. Without the flag the gates walked up
+ * from the package directory and answered a different question (or none, when the
+ * package lived in a venv outside any repository). The value is passed down to every
+ * gate, so the dispatcher and the gates can never disagree about the tree.
  *
  * `--tier` exists because a hand-maintained subset list drifts: every new gate
  * had to be added to `check:precommit` by hand, and twice it was not, so the
@@ -30,7 +39,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 // 两种形态（2026-11-25 公共核提仓）：
@@ -54,6 +63,17 @@ const EXIT_OK = 0
 const EXIT_BLOCKING = 1
 const EXIT_USAGE = 2
 const EXIT_ENV = 3
+
+/**
+ * A command line the dispatcher cannot honour (typo, missing value, bad path).
+ *
+ * Kept separate from a plain `Error` so the exit code can follow the shared
+ * vocabulary instead of collapsing into "environment error": "you typed it wrong"
+ * and "this machine cannot run the gates" are different answers, and the operator
+ * acts differently on each. (2026-11-25: `--root` needed the distinction because
+ * a mistyped path is the most likely way to hit it.)
+ */
+class UsageError extends Error {}
 
 const MINIMUM_PYTHON = [3, 9] as const
 
@@ -166,19 +186,26 @@ function probe(command: string, prefix: string[]): Interpreter | undefined {
  * happens to provide -- a trimmed build without PyYAML makes `g18` report a
  * false blocker, and the run then contradicts the commit message.
  */
-function venvInterpreters(): Array<{ command: string; prefix: string[] }> {
-  const venv = resolve(ROOT, '..', '..', '.venv')
-  return [
-    { command: resolve(venv, 'Scripts', 'python.exe'), prefix: [] },
-    { command: resolve(venv, 'bin', 'python'), prefix: [] },
-  ]
+function venvInterpreters(root: string | undefined): Array<{ command: string; prefix: string[] }> {
+  // 被判的仓自带 .venv 时优先用它：那是「这个仓钉死的那套依赖」。
+  // 包内形态下 ROOT 是 _gatesuite，`resolve(ROOT, '..', '..', '.venv')` 指向
+  // site-packages 里的假路径（提仓前它恰好等于仓根，提仓后不再成立），
+  // 所以 --root 给出时必须先按 root 找。
+  const bases = root === undefined ? [resolve(ROOT, '..', '..')] : [root, resolve(ROOT, '..', '..')]
+  return bases.flatMap((base) => {
+    const venv = resolve(base, '.venv')
+    return [
+      { command: resolve(venv, 'Scripts', 'python.exe'), prefix: [] },
+      { command: resolve(venv, 'bin', 'python'), prefix: [] },
+    ]
+  })
 }
 
-function discoverInterpreter(): Interpreter {
+function discoverInterpreter(root: string | undefined): Interpreter {
   const override = process.env.DSH_GOVERNANCE_PYTHON
   const candidates: Array<{ command: string; prefix: string[] }> = [
     ...(override === undefined || override === '' ? [] : [{ command: override, prefix: [] }]),
-    ...venvInterpreters(),
+    ...venvInterpreters(root),
     { command: 'python3', prefix: [] },
     { command: 'python', prefix: [] },
     { command: 'py', prefix: ['-3'] },
@@ -209,6 +236,8 @@ interface Options {
   selfcheckAll: boolean
   quiet: boolean
   noProfile: boolean
+  /** The work tree every gate must judge; `undefined` = each gate discovers its own. */
+  root: string | undefined
   forwarded: string[]
 }
 
@@ -219,7 +248,7 @@ function parseArguments(argv: string[]): Options {
   const forwarded = separator === -1 ? [] : argv.slice(separator + 1)
   const options: Options = {
     list: false, only: undefined, tier: undefined, selfcheckAll: false, quiet: false,
-    noProfile: false, forwarded,
+    noProfile: false, root: undefined, forwarded,
   }
   for (let index = 0; index < own.length; index += 1) {
     const argument = own[index]
@@ -227,18 +256,28 @@ function parseArguments(argv: string[]): Options {
     else if (argument === '--selfcheck-all') options.selfcheckAll = true
     else if (argument === '--quiet') options.quiet = true
     else if (argument === '--no-profile') options.noProfile = true
-    else if (argument === '--only') {
+    else if (argument === '--root') {
       const value = own[index + 1]
-      if (value === undefined) throw new Error('governance: --only needs a comma-separated gate list')
+      if (value === undefined) throw new UsageError('governance: --root needs a path')
+      const absolute = resolve(value)
+      // 用法错（2）与环境错（3）必须分开：路径打错是操作者的问题，环境是好的。
+      if (!existsSync(absolute) || !statSync(absolute).isDirectory()) {
+        throw new UsageError(`governance: --root is not a directory: ${value}`)
+      }
+      options.root = absolute
+      index += 1
+    } else if (argument === '--only') {
+      const value = own[index + 1]
+      if (value === undefined) throw new UsageError('governance: --only needs a comma-separated gate list')
       options.only = value.split(',').map(entry => entry.trim()).filter(entry => entry !== '')
       index += 1
     } else if (argument === '--tier') {
       const value = own[index + 1]
-      if (value === undefined) throw new Error('governance: --tier needs a comma-separated tier list')
+      if (value === undefined) throw new UsageError('governance: --tier needs a comma-separated tier list')
       options.tier = value.split(',').map(entry => entry.trim()).filter(entry => entry !== '')
       index += 1
     } else {
-      throw new Error(`governance: unknown argument ${JSON.stringify(argument)}; see the usage block in run.ts`)
+      throw new UsageError(`governance: unknown argument ${JSON.stringify(argument)}; see the usage block in run.ts`)
     }
   }
   return options
@@ -262,10 +301,12 @@ function selectGates(registry: GateEntry[], options: Options): GateEntry[] {
 }
 
 /** Run one gate as a child process, streaming its output to the caller. */
-function runGate(gate: GateEntry, interpreter: Interpreter, args: string[]): GateOutcome {
+function runGate(gate: GateEntry, interpreter: Interpreter, args: string[], root: string | undefined): GateOutcome {
   const script = gateScript(gate)
   const result = spawnSync(interpreter.command, [...interpreter.prefix, script, ...args], {
-    cwd: ROOT,
+    // 显式给了 --root 就以它为工作目录：门禁里的相对路径与子进程的 cwd 必须
+    // 指向**同一棵树**，否则「判的是哪棵仓」这件事只能靠约定而不是靠代码。
+    cwd: root ?? ROOT,
     stdio: 'inherit',
   })
   if (result.error !== undefined) throw result.error
@@ -299,16 +340,20 @@ function main(argv: string[]): number {
     return EXIT_OK
   }
 
-  const interpreter = discoverInterpreter()
+  const interpreter = discoverInterpreter(options.root)
   // `--no-profile` reaches only the gates that declare they read the host profile,
   // so a repository-only aggregate never touches the deployment and never breaks a
   // gate that has no such switch.
   const profileGates = options.noProfile
     ? selected.filter(gate => gate.profileProbe === true)
     : []
+  // 2026-11-25：--root 逐道门禁下发（20 道门的 CLI 都声明了它）。放在 forwarded
+  // 之前，让调用方自己转发的那份（`-- --root X`）仍然最后生效 —— 显式的更晚出现。
+  const rootArgs = options.root === undefined ? [] : ['--root', options.root]
   if (!options.quiet) {
     console.log(`governance: python ${interpreter.version} via ${interpreter.command}; `
       + `${selected.length} gate(s)${options.selfcheckAll ? ' in self-check mode' : ''}`
+      + (options.root === undefined ? '' : `; root ${options.root}`)
       + (options.noProfile
         ? `; repository-only (--no-profile forwarded to ${profileGates.length} profile-reading gate(s))`
         : ''))
@@ -323,9 +368,9 @@ function main(argv: string[]): number {
       continue
     }
     const args = options.selfcheckAll
-      ? ['--selfcheck']
-      : [...options.forwarded, ...(profileGates.includes(gate) ? ['--no-profile'] : [])]
-    const outcome = runGate(gate, interpreter, args)
+      ? ['--selfcheck', ...rootArgs]
+      : [...rootArgs, ...options.forwarded, ...(profileGates.includes(gate) ? ['--no-profile'] : [])]
+    const outcome = runGate(gate, interpreter, args, options.root)
     outcomes.push(outcome)
     if (!options.quiet) {
       console.log(`governance: ${gate.id} -> exit ${outcome.code}`)
@@ -362,5 +407,5 @@ try {
   process.exitCode = main(process.argv.slice(2))
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error))
-  process.exitCode = EXIT_ENV
+  process.exitCode = error instanceof UsageError ? EXIT_USAGE : EXIT_ENV
 }
