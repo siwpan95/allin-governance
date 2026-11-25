@@ -68,7 +68,19 @@ OUT_OF_SCOPE = (".workbuddy/", "vendor/", "docs/md/", "docs/历史/")
 # them would judge the same content twice.
 ALIAS_DIRS = {"spec", "facts", "records", "历史"}
 # Records are dated snapshots; they are exempt from path-ref, not from commands.
-SNAPSHOT_SCOPES = ("docs/记录/", "audit-fragments/")
+# 根 CHANGELOG.md 同属发布历史（本仓头部自述「面向消费产物的人，决策留 docs/记录/」）：
+# 里面「此前 import 某工具」「当时只在仓内」都是历史陈述，不是当下承诺 ——
+# 与 docs/记录/ 同款只免 path-ref，命令断言照判。allin 仓的 check_readme_refs
+# 亦整卷排除 CHANGELOG.md（历史留档不改），两处口径一致。
+# architecture/adr/ 同款：accepted 的 ADR 是当时决策的快照，落地路径随后续重构
+# 迁走（如 g19 / check_pkg_parity 已进公共核）不应倒过来改历史决策正文。
+# docs/INDEX.md + docs/事实源/ 下的机器分区/月账/分区索引：这些是**登记台账**，
+# 时点块记录「当时实测的落点」（如 tools/facts/measure.py 在提仓前存在），
+# 迁包后路径失效属历史事实；命令断言仍照判，只免 path-ref。
+SNAPSHOT_SCOPES = (
+    "docs/记录/", "audit-fragments/", "CHANGELOG.md", "architecture/adr/",
+    "docs/INDEX.md", "docs/事实源/",
+)
 # Runtime evidence is produced by the gates, never committed; a doc pointing at
 # it is describing output, not promising a file exists.
 RUNTIME_OUTPUT = ("tools/gate/audit/",)
@@ -125,6 +137,21 @@ def corpus(root: Path, files: list[str]) -> tuple[list[str], list[str]]:
     return judged, exempt
 
 
+#: 公共核 2.0.0 提仓后从消费仓迁出的工具族。这些旧路径是**公共核自己的接口
+#: 迁移史**（SPEC-206「接口契约」该进包的七类之一），不是某台机的事实：
+#: 所有从仓内形态升级到包形态的消费仓都会遇到。旧路径在消费仓已不存在，
+#: 但能力已随包分发（或并入包 CLI）——文档提到它属迁包尾款，不等同于
+#: 「承诺一个当前可用的仓内文件」。按包内对应物在场判定「已迁移」。
+#: 键是旧前缀；值是包内必须存在的锚点（相对 _gatesuite/）。
+MIGRATED_TO_PACKAGE = {
+    "tools/gate/governance/": "gates/g00_meta.py",
+    "tools/facts/": "runtime/govlib.py",
+    "tools/repocheck/": "../_repocheck/scanner.py",
+    "tools/_shared/": "runtime/govlib.py",
+    "tools/check_pkg_parity.py": "run.ts",
+}
+
+
 def resolves(root: Path, doc: str, spec: str) -> bool:
     """True when ``spec`` names a file under any of the conventions a doc may use."""
     doc_dir = (root / doc).parent
@@ -132,6 +159,11 @@ def resolves(root: Path, doc: str, spec: str) -> bool:
     for base in bases:
         for candidate in (base / spec, base / spec.lstrip("/")):
             if candidate.is_file():
+                return True
+    # 迁包路径：旧前缀命中 + 包内锚点在场 ⇒ 视为已迁移（包 CLI 接手），不判红。
+    for old, anchor in MIGRATED_TO_PACKAGE.items():
+        if spec == old or spec.startswith(old):
+            if (Path(__file__).resolve().parent.parent / anchor).exists():
                 return True
     return False
 

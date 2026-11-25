@@ -1,5 +1,20 @@
 # 变更记录
 
+## 2.3.1 —— 2026-11-25 · 包形态门禁三缺陷修复（g00 / g18 / g19）
+
+公共核 2.0.0 提仓后，门禁套件从「仓内」搬到「site-packages」。三道门禁的
+判据仍按仓内布局推导路径，导致消费仓 `npm run check:governance`（回退入口）
+长期 15/20 红 —— 实测 20 条 g00 `untracked-support` + g18 台账不可读 + g19 历史路径。
+
+| 门禁 | 根因 | 修复（不放宽判据语义） |
+| --- | --- | --- |
+| `g00-meta` | `untracked_support()` 以 `registry_path.parent` 当仓内目录。包形态下那是 site-packages（可能在仓内 `.venv/` 下），20 个包文件全被当「未入索引的支持模块」；`script not found` 则因 registry 里写 `governance/gates/x.py`，包内真实落点是 `_gatesuite/gates/x.py` | ① 树外安装或路径段含 `site-packages`/`dist-packages` ⇒ 不判（判据语义「仓内自研模块必须入索引」不适用）；② 脚本路径同 run.ts 的 `gateScript()` 剥 `governance/` 前缀。两条新增 selfcheck 用例（树内 venv 形态 + 树外形态） |
+| `g18-exceptions` | `exceptions.yml`/`registry-known-gaps.txt`/`baseline/` 按仓内路径读，但台账已作为 B 类证据随包分发，消费仓只留 gates/runtime | 新增 `ledger_path()`：仓内优先（保留消费仓自定义例外的语义），缺失则回退包内 `<GOVERNANCE_DIR>/<basename>`；`count_frozen` 同款 |
+| `g19-docs-refs` | ① 根 `CHANGELOG.md` / `architecture/adr/` / INDEX / 机器事实源是历史快照，迁包后路径失效属历史事实；② 迁包前工具族（facts/repocheck/governance/_shared/check_pkg_parity）旧路径在消费仓已不存在 | ① 快照类文档只免 path-ref、命令断言照判（与 `docs/记录/` 同款）；② 新增 `MIGRATED_TO_PACKAGE` 迁移表：旧路径 + 包内锚点在场 ⇒ 判「已迁移」，属公共核接口契约（SPEC-206 七类之一），非机器特化 |
+
+**验收**：消费仓两入口实测 —— 默认 repocheck 入口 49/49 `status=clean`，回退 npm 入口 **20/20 clean**（升级前 15/20）；三道门禁 `--selfcheck` 全绿（g00 caught 12 / clean 6；g18 caught 4 / clean 1；g19 caught 3 / clean 2）。
+**不改判据强度**：新增用例均证明「仓内未跟踪支持模块仍报红」「未登记注解仍报红」「现行文档路径仍判」；只区分仓内自研文件与已安装依赖/历史快照/已迁移接口。
+
 ## 2.3.0 —— 2026-11-25
 
 **文本分类骨架：TextCNN 打底，规则降级**（全哥定的结构）。

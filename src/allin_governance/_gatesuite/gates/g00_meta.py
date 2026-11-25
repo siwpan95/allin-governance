@@ -38,6 +38,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runtime"))
@@ -105,8 +106,22 @@ def untracked_support(root: Path, registry_path: Path, tracked: set[str]) -> lis
     check tracks wherever the subtree is placed (it now lives under
     tools/gate/governance/ rather than at the repo root).
     """
-    base = registry_path.parent
+    base = registry_path.parent.resolve()
     if not base.is_dir():
+        return []
+    # 包形态（公共核 2.0.0 提仓后）：registry 装在运行环境里 —— 可能是消费仓
+    # 工作树**内部**的 `.venv/Lib/site-packages/`（Windows 常见布局），也可能在树外。
+    # 包文件本就不进消费仓的 git index（.venv 已 gitignore）—— 拿它比对会把整套
+    # 门禁源码判成「未跟踪支持文件」（实测 20 条红）。两种安装位置都要排除：
+    # ① 树外安装：relative_to 失败 ⇒ 不是仓内文件，不判；
+    # ② 树内但落在 site-packages / dist-packages 的路径段：属已安装依赖，不判。
+    # 判据语义「仓内**自研**支持模块必须入本仓索引」在两种情况下都不适用；
+    # 包自身的可安装性由 wheel/sdist 清单与包仓门禁负责。
+    try:
+        rel = base.relative_to(root.resolve())
+    except ValueError:
+        return []
+    if "site-packages" in rel.parts or "dist-packages" in rel.parts:
         return []
     return sorted(path.relative_to(root).as_posix() for path in base.rglob("*.py")
                   if path.relative_to(root).as_posix() not in tracked)
@@ -263,7 +278,19 @@ def inspect(root: Path, registry_path: Path, rules_path: Path, python: str) -> R
         # would point at the real tree and the fixture scripts would never resolve.
         # registry_path.parent.parent == tools/gate in the real run, == sandbox.path
         # in the self-check, so both scenarios resolve correctly.
-        script = registry_path.parent.parent / str(entry["script"])
+        script_rel = str(entry["script"])
+        # 包形态：registry 在 <pkg>/_gatesuite/，而 registry 里的 script 仍写
+        # `governance/gates/x.py`（仓内形态相对 tools/gate 的路径）。与 run.ts 的
+        # gateScript() 同款剥前缀 —— 包内实际落点是 _gatesuite/gates/x.py。
+        # 用「剥前缀后是否存在」判别形态，仓内路径原样保留，避免误判。
+        if script_rel.startswith("governance/"):
+            in_package = registry_path.parent.parent / script_rel
+            if not in_package.is_file() and (registry_path.parent / script_rel[len("governance/"):]).is_file():
+                script = registry_path.parent / script_rel[len("governance/"):]
+            else:
+                script = in_package
+        else:
+            script = registry_path.parent.parent / script_rel
         if not script.is_file():
             report.block("registry", str(registry_path.relative_to(root)), 0,
                          f"{identifier}: script not found at {entry['script']}")
@@ -445,6 +472,26 @@ def selfcheck() -> int:
                          sandbox.path / "governance/RULES.md", sys.executable)
         check.detects("a support module missing from the index",
                       any(finding.kind == "untracked-support" for finding in report.findings))
+
+    # 包形态反向：registry 在消费仓 root 之外（site-packages 的 _gatesuite/）时，
+    # 包内 .py 不是消费仓的支持模块，不得判成「未跟踪」（实测曾 20 条红）。
+    with govlib.Sandbox() as sandbox:
+        pkg_registry = Path(tempfile.mkdtemp(prefix="g00-package-registry-")) / "registry.json"
+        pkg_registry.parent.joinpath("g00_meta.py").write_text("# shipped inside the wheel\n", encoding="utf-8")
+        pkg_registry.write_text("{}\n", encoding="utf-8")
+        check.quiet("package-form registry outside the work tree is not judged as untracked",
+                    bool(untracked_support(sandbox.path, pkg_registry, set())))
+
+    # 包形态第二种落点：venv 建在仓内时，site-packages 物理位于 root 之下，
+    # 但属已安装依赖（gitignore），同样不得判成未跟踪支持文件。
+    with govlib.Sandbox() as sandbox:
+        site_base = sandbox.path / ".venv" / "Lib" / "site-packages" / "allin_governance" / "_gatesuite"
+        site_base.mkdir(parents=True)
+        (site_base / "g00_meta.py").write_text("# shipped inside the wheel\n", encoding="utf-8")
+        site_registry = site_base / "registry.json"
+        site_registry.write_text("{}\n", encoding="utf-8")
+        check.quiet("package-form registry inside an in-tree venv is not judged as untracked",
+                    bool(untracked_support(sandbox.path, site_registry, set())))
 
     # H-7 反向：白名单只声明了 g02，故意缺 g01 ⇒ 必须判红。
     with govlib.Sandbox() as sandbox:

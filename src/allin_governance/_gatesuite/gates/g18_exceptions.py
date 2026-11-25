@@ -88,7 +88,7 @@ def load_exceptions(path: Path) -> tuple[list[dict] | None, str]:
 def count_frozen(root: Path) -> dict[str, int]:
     """Frozen baseline keys per gate, exemption rows, and declared gaps."""
     counts: dict[str, int] = {}
-    baseline = root / BASELINE_DIR
+    baseline = ledger_path(root, BASELINE_DIR)
     if baseline.is_dir():
         for path in sorted(baseline.glob("*.txt")):
             try:
@@ -100,7 +100,7 @@ def count_frozen(root: Path) -> dict[str, int]:
                 counts[path.stem] = len(keys)
     for rel, label in ((EXEMPTIONS_REL, "repo_hygiene_exemptions.csv"), (GAPS_REL, "registry-known-gaps.txt")):
         try:
-            lines = [ln.strip() for ln in (root / rel).read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = [ln.strip() for ln in ledger_path(root, rel).read_text(encoding="utf-8", errors="replace").splitlines()
                      if ln.strip() and not ln.strip().startswith("#")]
         except OSError:
             continue
@@ -114,10 +114,25 @@ def count_frozen(root: Path) -> dict[str, int]:
     return counts
 
 
+def ledger_path(root: Path, rel: str) -> Path:
+    """Resolve a governance ledger: work-tree copy first, shipped package copy second.
+
+    例外/基线/缺口是**包级被核准的证据**（三层分域 B 类，2026-11-24），随公共核
+    一起分发。仓内形态在 `<root>/tools/gate/governance/` 下；提仓后消费仓只留
+    gates/runtime，包内副本在 `<GOVERNANCE_DIR>/<basename>` —— 两段路径不同，
+    不能只换 root 不换 rel。仓内优先保留「各消费仓可自定义例外」的语义；
+    包内回退避免把整套包判成无台账（实测 exceptions.yml 不可读的 1 条红）。
+    """
+    in_tree = root / rel
+    if in_tree.exists():
+        return in_tree
+    return govlib.GOVERNANCE_DIR / Path(rel).name
+
+
 def run(root: str, args: argparse.Namespace) -> Report:
     report = Report(title=TITLE)
     base = Path(root)
-    entries, error = load_exceptions(base / EXCEPTIONS_REL)
+    entries, error = load_exceptions(ledger_path(base, EXCEPTIONS_REL))
     if error:
         report.block("ledger-unusable", EXCEPTIONS_REL, 0, error)
         return report
