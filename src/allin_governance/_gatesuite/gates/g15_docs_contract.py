@@ -6,6 +6,16 @@
 本门禁是它的可执行落地，判据与 allin 仓的 `tools/gate/docs_index.py` **同源**（两处落点、各自自包含）。
 本仓没有 `docs/INDEX.md` 时记 `SKIPPED (not a pass)` —— 该契约为选用制，不强制每个仓采用。
 
+**必须报 `scanned`（2026-11-25 补）**：汇总行与其余门禁同款
+`<title>: scanned N file(s); blocking B; exempted E; skipped S.`，N = 实际判过的
+文档数（`docs/` 去掉历史树与 ASCII 别名目录）。此前本门禁不报这个数，于是
+「量了 141 份、没发现问题」与「一份都没量、也没发现问题」在输出与退出码上完全
+同形 —— 盲门元判据只能记它 `undetermined`，而 `undetermined` 一旦被
+`--allow-undetermined` 放行，这道门禁就永久免检。**不可判定不等于通过。**
+配套两条判据：`scanned 0 + 无 INDEX.md` ⇒ SKIP（不是通过，严格模式下另退 2）；
+`INDEX.md 在、但除枢纽文件外一份文档都没有` ⇒ **判红**（D1/D3/D4/D5 会空真通过，
+整道门禁从此无论文档怎么烂都是绿的 —— 这是盲门，不是"仓里没东西"）。
+
 判据（D1–D17）：
   D1 登记完整 —— docs/ 下每份非历史文档都能在 INDEX.md 里找到
   D2 索引有效 —— INDEX.md 里每条指向 docs/ 的链接都指向真实存在的文件
@@ -56,6 +66,10 @@ import docs_contract  # noqa: E402  —— D9–D17 判据的**唯一实现**（
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_ENV = 0, 1, 2, 3
 
+#: 与 registry.json 里的 `title` 逐字一致：汇总行以它开头，盲门元判据（
+#: `check_blind_gates.py` 的 `SUMMARY_RE`）才能把「它声称在做什么」与数字一起读走。
+TITLE = "docs hub index contract (adoption-based)"
+
 HIST_DIR = "md"                     # 历史树，冻结，不参与 D1/D4
 ALIASES = {"spec": "规范", "facts": "事实源", "records": "记录", "历史": "md"}
 HUB_FILES = {"README.md", "INDEX.md", "MEMORY.md"}
@@ -73,6 +87,12 @@ class Report:
         self.reported: list[tuple[str, str]] = []   # 只报告不阻断
         self.exempted: dict[str, int] = {}
         self.skipped: list[str] = []
+        #: 实际判过的文档数（`docs/` 去掉历史树与 ASCII 别名目录之后的真实判定面）。
+        #: 2026-11-25 补：此前本门禁从不报这个数，于是「量了 8 份、没发现问题」与
+        #: 「一份都没量、也没发现问题」在输出上完全同形 —— 盲门元判据对它只能记
+        #: `undetermined`，而 `undetermined` 一旦被 `--allow-undetermined` 放行，
+        #: 它就永久免检。**不可判定不等于通过**。
+        self.scanned: int = 0
 
     def block(self, code: str, msg: str) -> None:
         self.blocking.append((code, msg))
@@ -307,9 +327,20 @@ def run(root: str, args) -> Report:
     if not os.path.isdir(docs):
         raise SystemExit("ENV ERROR: 找不到 docs/：%s" % docs)
     if not os.path.isfile(os.path.join(docs, "INDEX.md")):
+        # 选用制：没有 INDEX.md = 没采用契约 = 不适用。记 SKIP（不是通过），scanned 为 0
+        # 也会照实打印 —— 盲门元判据据此判 `skipped`（not a pass），而不是红或绿。
         rep.skip("g15-docs-contract：本仓 docs/ 无 INDEX.md（该契约为选用制，未采用即不适用）")
         return rep
     files = sorted(iter_docs_files(docs))
+    rep.scanned = len(files)
+    if not [f for f in files if f not in HUB_FILES]:
+        # 采用契约（INDEX.md 在）却**除枢纽文件外一份文档都没有**：D1/D3/D4/D5 在
+        # 这种输入上全部空真通过，整道门禁从此无论文档怎么烂都是绿的 —— 这就是盲门本身
+        # （枢纽自述的份数也算不出来，D8 同样无从判定）。判红，并给两条出口。
+        rep.block("D1", "无法判定：docs/ 里除枢纽文件（README/INDEX/MEMORY）外没有任何"
+                        "文档（INDEX.md 存在但无可判对象）⇒ 登记类判据会空真通过。"
+                        "要么补文档，要么移除 INDEX.md（未采用契约即不适用，记 SKIPPED not a pass）")
+        return rep
     reg = load_index(docs, rep)
     check_d1(files, reg, rep)
     check_d2(docs, reg, rep)
@@ -359,6 +390,13 @@ def emit(rep: Report, args, baseline: set[str]) -> int:
             print("SKIPPED (not a pass): %s" % s)
         if rep.exempted:
             print("exempted: " + " ".join("%s=%d" % kv for kv in sorted(rep.exempted.items())))
+        # 与 govlib.Report.render() 的首行同款：盲门元判据的 `SUMMARY_RE` 认这一种形态，
+        # 且只有这种形态能同时读走 scanned / blocking / skipped 三个数。
+        print("%s: scanned %d file(s); blocking %d; exempted %d; skipped %d."
+              % (TITLE, rep.scanned, len(rep.blocking),
+                 sum(rep.exempted.values()), len(rep.skipped)))
+        # 旧行保留：历史审计记录（tools/gate/audit/*.md）引用的是 `blocking=… new=…`
+        # 这一形态，换成新行会让旧记录对不上自己的执行输出。两行并存，语义一致。
         print("blocking=%d baseline=%d new=%d reported=%d skipped=%d"
               % (len(rep.blocking), known, len(new_block), len(rep.reported), len(rep.skipped)))
 
@@ -396,6 +434,11 @@ SELFCHECK_CASES = [
     ("volume-gap", "交接卷号有空洞", False),
     ("volume-no-range", "交接卷缺覆盖区间", False),
     ("count-drift", "INDEX 头部自述份数与实际不符", False),
+    # 两条「一个对象都没量」的负对照 —— 缺了它们，`scanned` 补上去也只是个数字。
+    # empty-hub：采用了契约却无文档 ⇒ 必须判红（D1 空真通过 = 盲门）。
+    # no-index ：没采用契约 ⇒ 记 SKIP（不是通过），且严格模式下必须**不判绿**。
+    ("empty-hub", "采用契约但除枢纽外无任何文档（盲门）", False),
+    ("no-index", "docs/ 没有 INDEX.md：SKIP 不是通过", False),
 ]
 
 
@@ -452,6 +495,19 @@ def alias_capable() -> bool:
 
 def build_fixture(kind: str, base: str, skip_aliases: bool = False) -> str:
     docs = os.path.join(base, "docs")
+    if kind == "empty-hub":
+        # 只放枢纽文件、不放任何可判文档：D1 在这种输入上会**空真通过**，
+        # 而那正是要拦的形态（一份文档都没量到却报绿 = 盲门）。
+        os.makedirs(docs, exist_ok=True)
+        with io.open(os.path.join(docs, "INDEX.md"), "w", encoding="utf-8") as f:
+            f.write("# INDEX\n\n> 已采用契约，但一份文档都没有。\n")
+        return docs
+    if kind == "no-index":
+        # 未采用契约：docs/ 在、INDEX.md 不在。选用制下这是「不适用」，不是「通过」。
+        os.makedirs(docs, exist_ok=True)
+        with io.open(os.path.join(docs, "README.md"), "w", encoding="utf-8") as f:
+            f.write("# 门面\n\n本仓未采用文档枢纽契约。\n")
+        return docs
     for sub in ("规范", "事实源", "记录/交接", "记录/审计"):
         os.makedirs(os.path.join(docs, sub), exist_ok=True)
 
@@ -539,7 +595,11 @@ def build_fixture(kind: str, base: str, skip_aliases: bool = False) -> str:
 
 
 def selfcheck() -> int:
-    caught = clean = misreports = 0
+    # `misses`：注入的破坏用例**没被抓到**。此前这种情形只打印一行 MISSED，
+    # 既不计入 SELFCHECK 载荷也不改变退出码 —— 一条"能打印但不能判"的负对照，
+    # 与被它守护的盲门是同一个病（2026-11-25 补 empty-hub 用例时实测发现：
+    # 把判红整段删掉，自检照样 exit 0）。现在它判红。
+    caught = clean = misreports = misses = 0
     skip_aliases = not alias_capable()
     if skip_aliases:
         print("SELFCHECK note: 夹具别名不可遍历（无符号链接权限或装入点防护）"
@@ -548,10 +608,42 @@ def selfcheck() -> int:
         tmp = tempfile.mkdtemp(prefix="docsidx_")
         try:
             build_fixture(kind, tmp, skip_aliases=skip_aliases)
-            args = argparse.Namespace(root=tmp, quiet=True, no_aliases=skip_aliases,
+            # 空枢纽夹具里没有别名目标目录：D6 一并跳过，否则它红的理由就不对
+            # （一条负对照必须红在**它要证的那条判据**上，红在别处等于没证）。
+            args = argparse.Namespace(root=tmp, quiet=True,
+                                      no_aliases=skip_aliases or kind == "empty-hub",
                                       list_all=False, write_baseline=False)
             rep = run(tmp, args)
             ok = not rep.blocking
+            if kind == "empty-hub":
+                # 这一条还必须红在**对的理由**上：只能是「除枢纽外一份文档都没有」。
+                # 否则「随便哪条判据红一下」也能让这条负对照通过，等于没证。
+                if any("除枢纽文件" in m and "没有任何" in m for _, m in rep.blocking):
+                    caught += 1
+                else:
+                    misses += 1
+                    print("MISSED case not caught: %s（scanned=%d, blocking=%s）"
+                          % (kind, rep.scanned, [m for _, m in rep.blocking][:2]))
+                continue
+            if kind == "no-index":
+                # 未采用契约：scanned 0 + 显式 SKIP，默认退 0（选用制，不误伤），
+                # 但严格模式下必须**不判绿** —— 这是「SKIP ≠ pass」的机械证明。
+                previous = os.environ.get("ALLIN_GATE_STRICT_SKIP")
+                os.environ["ALLIN_GATE_STRICT_SKIP"] = "1"
+                try:
+                    strict_code = emit(rep, args, set())
+                finally:
+                    if previous is None:
+                        os.environ.pop("ALLIN_GATE_STRICT_SKIP", None)
+                    else:
+                        os.environ["ALLIN_GATE_STRICT_SKIP"] = previous
+                if rep.scanned == 0 and rep.skipped and strict_code != EXIT_OK:
+                    caught += 1
+                else:
+                    misses += 1
+                    print("MISSED case not caught: %s（scanned=%d, skipped=%d, strict=%d）"
+                          % (kind, rep.scanned, len(rep.skipped), strict_code))
+                continue
             if expect_clean:
                 if ok:
                     clean += 1
@@ -562,6 +654,7 @@ def selfcheck() -> int:
                 if not ok:
                     caught += 1
                 else:
+                    misses += 1
                     print("MISSED case not caught: %s" % kind)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -570,7 +663,11 @@ def selfcheck() -> int:
     clean += extra["clean"]
     misreports += extra["misreports"]
     print('SELFCHECK {"caught":%d,"clean":%d,"misreports":%d}' % (caught, clean, misreports))
-    return EXIT_OK if (caught >= 1 and clean >= 1 and misreports == 0) else EXIT_FAIL
+    if misses:
+        print("selfcheck failed for %s：%d 条注入的破坏用例没被抓到（MISSED 行见上）"
+              % ("g15-docs-contract", misses))
+    return (EXIT_OK if (caught >= 1 and clean >= 1 and misreports == 0 and misses == 0)
+            else EXIT_FAIL)
 
 
 # ---------------------------------------------------------------- CLI

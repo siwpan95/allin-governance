@@ -41,8 +41,34 @@ command relative to the repository root, relative to its own directory, or with
 a leading ``/`` meaning "from the root" -- all three are accepted. What is never
 accepted is a target that exists nowhere.
 
+The baseline of this gate is the pilot for the **bidirectional ratchet**
+(``govlib.baseline_write`` / ``govlib.baseline_check``, 口径 ADR-0011 §D1): a
+one-way baseline only answers "is this finding old", and it fails silently in two
+directions -- it grows whenever somebody re-freezes without reviewing (hiding new
+defects in the default), and it rots when a fixed key is never pruned (until
+nobody trusts the ledger). So ``--write-baseline`` refuses a **pure growth** (old
+key set is a proper subset of the new one: nothing was fixed, the file just got
+fatter) unless ``--allow-baseline-growth`` is given, while a mixed write -- some
+fixed, some newly taken over -- is allowed but must print ``-fixed``/``+new``
+first. A default run fails when a baseline key no longer fires, naming it, unless
+``--pass-on-stale`` is given -- and that switch, like ``--allow-baseline-growth``,
+is a **usage error (exit 2) under CI** (``CI=1`` or ``--ci``), because a
+permanently passed stale key is a ledger nobody can trust. Every check run also
+prints a machine-readable ``scanned=/baseline=/stale=/new=`` line: without numbers,
+"12 findings" and "none" look identical in a log that only has exit codes.
+
+The other 16 baselines are deliberately left on the one-way semantics for now
+(2.4.x wires them to the same functions); flipping them all at once would turn a
+batch of consuming repositories red for a policy change they never reviewed. The
+key format (``count:<n>``) and the baseline header metadata of D1.1/D1.3 are also
+deferred to that batch: they change 17 files' format and need a migration path,
+and landing them on the single pilot would turn "pilot first" into "pilot breaks
+the format".
+
 Exit codes follow the governance vocabulary: 0 clean, 1 blocking finding,
-2 usage error, 3 environment error.
+2 usage error, 3 environment error. A refused baseline write and a stale ledger
+both exit 1: the command line was legal, the policy says no. A human-only switch
+under CI exits 2: there the command line itself is the problem.
 """
 
 from __future__ import annotations
@@ -56,7 +82,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runtime"))
 
 import govlib  # noqa: E402  (path is fixed up immediately above)
-from govlib import EXIT_BLOCKING, EXIT_ENV, EXIT_OK, Report  # noqa: E402
+from govlib import EXIT_BLOCKING, EXIT_ENV, EXIT_USAGE, Report  # noqa: E402
 
 GATE = "g19-docs-refs"
 TITLE = "governance: documentation claims resolve to something that exists"
@@ -326,6 +352,9 @@ def selfcheck() -> int:
                 check.quiet(kind, flagged)
             else:
                 check.detects(kind, flagged)
+    # 基线棘轮的自证：单向棘轮从没被证过"它会拒绝变长"，双向棘轮把五组负对照
+    # 放在 govlib 里一次定义（2.4.x 铺开时每道门禁一次调用就有同一份证明）。
+    govlib.ratchet_selfcheck(check)
     return check.finish()
 
 
@@ -335,10 +364,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quiet", action="store_true", help="print the summary line only")
     parser.add_argument("--selfcheck", action="store_true", help="inject fixtures and prove the gate works")
     govlib.add_baseline_argument(parser)
+    # 试点：双向棘轮的两开关只装在 g19（2.4.x 再逐门禁接线，见 govlib.add_ratchet_argument）。
+    govlib.add_ratchet_argument(parser)
     args = parser.parse_args(argv)
     govlib.configure_stdio()
     if args.selfcheck:
         return selfcheck()
+    # ADR-0011 D1.4：人手开关在 CI 下是**用法错误**（exit 2），不是放行。
+    # 判在参数解析这一步、判在跑判据之前 —— 宁可红在参数解析，不要绿在语义。
+    human_only = govlib.ratchet_human_only(args)
+    if human_only:
+        print(f"USAGE ERROR: {' '.join(human_only)} 只给人用：CI（CI=1 或 --ci）下出现即用法错误。"
+              "账本要收就用 --write-baseline 收账；把失真设成常态不叫放行。", file=sys.stderr)
+        return EXIT_USAGE
     root = Path(args.root).resolve() if args.root else govlib.repo_root()
     if not root.is_dir():
         print(f"ENV ERROR: root 不存在：{root}")
@@ -350,27 +388,37 @@ def main(argv: list[str] | None = None) -> int:
     baseline_path = govlib.baseline_path(root, GATE, args.baseline)
     baseline = govlib.Baseline(baseline_path).load()
     if args.write_baseline:
-        baseline.write(report.findings)
-        # 打印绝对路径：这是「写到哪去了」的唯一凭据，相对路径不足以证明落在仓内。
-        print(f"wrote baseline {baseline_path.resolve()} ({len(report.findings)} key(s))")
-        return EXIT_OK
+        # 双向棘轮（2026-11-25，借鉴 ESLint bulk suppressions）：写基线默认**拒绝变长**。
+        # 拒绝时不碰文件，退出非 0，并把"差几个键、差在哪、要放行加什么开关"说清楚。
+        revision = govlib.baseline_write(baseline, report.findings, root,
+                                         allow_growth=args.allow_baseline_growth,
+                                         reason=args.reason)
+        print("\n".join(revision.lines))
+        return revision.code
     missing_baseline = not baseline_path.is_file()
-    caveat = ""
-    if missing_baseline:
-        # 缺失不许静默（本仓纪律：SKIP ≠ pass，没有棘轮也不许装作有）。
-        # 退化为**全量判定**：漏掉基线不该让门禁变松，只该让它变严 + 说出来。
-        caveat = (f"baseline 缺失：{govlib.display_path(baseline_path, root)} 不存在 ⇒ 棘轮失效，"
-                  f"本次按全量判定（不影响判红；要冻结存量用 --write-baseline）")
-        report.note(caveat)
     new = list(report.findings) if (args.no_baseline or missing_baseline) else baseline.filter_new(report.findings)
+    # 双向棘轮的另一半：查账。基线里当下已不再命中的键 = 过期账单，默认判红。
+    # --no-baseline 是"当没有棘轮"，此刻查账没有意义（和无视基线自相矛盾）。
+    ledger = None
+    if not args.no_baseline:
+        ledger = govlib.baseline_check(baseline, report.findings, root,
+                                       pass_on_stale=args.pass_on_stale,
+                                       scanned=report.scanned)
+        for line in ledger.lines:
+            report.note(line)
     shown = Report(title=report.title, findings=report.findings if args.list_all else new,
                    exempted=report.exempted, skipped=report.skipped, notes=report.notes,
                    scanned=report.scanned)
     print(shown.render().splitlines()[0] if args.quiet else shown.render())
-    if caveat and args.quiet:
-        # --quiet 只留首行；棘轮失效这件事不能被折掉，单独补一行到 stderr。
-        print(f"  note: {caveat}", file=sys.stderr)
-    return report.exit_code(new)
+    if ledger is not None and args.quiet and (ledger.stale or ledger.state == govlib.BASELINE_ABSENT):
+        # --quiet 只留首行；「棘轮失效」与「账本过期」都不能被折掉，补到 stderr。
+        for line in ledger.lines:
+            print(f"  {line}", file=sys.stderr)
+    code = report.exit_code(new)
+    if ledger is not None and ledger.stale and not args.pass_on_stale:
+        # 过期账单是不是"新问题"无关紧要：账本失真本身就是阻断项。
+        code = EXIT_BLOCKING
+    return code
 
 
 if __name__ == "__main__":

@@ -7,8 +7,11 @@ have exactly one implementation:
   the baseline, ``2`` usage error, ``3`` environment error),
 * **fail-loud repository discovery** -- a gate refuses to run when it cannot
   name the work tree it is judging, instead of silently scanning nothing,
-* the **baseline ratchet** -- existing findings are frozen once so a gate can
-  switch on while the repository is still being cleaned up,
+* the **baseline ratchet**, in both directions -- existing findings are frozen once
+  so a gate can switch on while the repository is still being cleaned up, and the
+  frozen set is only ever allowed to **shrink, because something was fixed**
+  (growth needs an explicit opt-in, and a key that no longer fires is a blocking
+  stale bill),
 * the **self-check harness** -- a gate proves both that it still catches an
   injected defect and that it still stays quiet on clean input.
 
@@ -401,6 +404,395 @@ def display_path(path: Path, root: Path) -> str:
         return path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def display_scope(path: Path, root: Path) -> str:
+    """基线是**哪一份**：仓内 / 仓外（包内、任意路径）。
+
+    「读到了哪一份」必须进输出，理由与 ``baseline_path`` 的 docstring 同一件事：
+    基线解析到 ``site-packages`` 时，棘轮只剩「有个文件被读了」，而报告里看不出
+    这个区别 —— 换台机器装同一个版本，同一条命令念的却是另一份账本。
+    """
+    try:
+        path.resolve().relative_to(root.resolve())
+        return "仓内"
+    except ValueError:
+        return "仓外（包内/任意路径）"
+
+
+# --------------------------------------------------------------------------- #
+# baseline ratchet -- 双向
+# --------------------------------------------------------------------------- #
+#
+# 单向棘轮只回答「这条 finding 是不是存量」。它有两种坏法，都很安静：
+#
+# 1. **静默增长**：`--write-baseline` 把当下所有 finding 一把冻进去。基线于是
+#    越写越长，新问题被顺手藏进默认 —— 比不加基线更坏，因为现在它连"没人管"
+#    这个信号都消失了（ESLint 的 bulk suppressions 明确禁止这种一次性收编）。
+# 2. **过期账单**：基线里的键已经不再命中（问题修好了，或被豁免/移出了判定
+#    范围），却没人清账。账本只增不减，一年后没人敢信它，棘轮退化成装饰。
+#
+# 所以「只许因已修而缩短」必须由机制保证，而不是靠纪律提醒：
+#
+# * 写：**纯增长**（旧键集 ⊂ 新键集，一条都没修好、只是长胖）⇒ 拒绝写入、退出非 0、
+#   **基线文件一个字节都不动**，除非显式 ``--allow-baseline-growth``（并在提交信息里
+#   写明理由）。有修好、也有新增的「混账」允许写，但必须先打出 ``-fixed/-new`` 两列。
+# * 读：基线里有、当下不命中 ⇒ 退出非 0 并指名哪些键 stale；``--pass-on-stale``
+#   供人本地放行，**CI 禁止使用**（D1.4：CI 下出现即 exit 2，宁可红在参数解析）。
+#
+# 口径来源：ADR-0011 §D1（2026-11-25 accepted，"计数与基线从手写改为可判"）。
+# 为什么拒「纯增长」而不是拒「任何增长」：修好 3 条又新增 1 条是**正常收账**，
+# 对每一次正常收账都喊狼，喊到第三次就没人看开关了 —— 一个总在喊的开关等于没有开关。
+#
+# 两条都不进 ``Baseline`` 类：类是数据（键集合 + 落点），judgment 在这些函数里，
+# 这样 2.4.x 让其余门禁接上时是**接线**，不是重写判据。
+
+#: 基线文件的三种状态：不存在 / 存在但零键 / 存在且有键。
+BASELINE_ABSENT = "absent"
+BASELINE_EMPTY = "empty"
+BASELINE_PRESENT = "present"
+
+
+@dataclass
+class BaselineRevision:
+    """一次基线操作的决定、账目与**要打印的说明**。
+
+    说明和决定放在同一个返回值里，是因为拒绝写入时"为什么不写、差几个键、
+    差在哪、要放行该加什么开关"就是这件事的全部价值。让每道门禁各写一份措辞，
+    同一个语义迟早有 16 种说法，而 16 种说法里的任何一条都可能被当成噪音跳过。
+    """
+
+    #: 这次操作是否被允许发生（写：允许写；查：账本是否诚实）。
+    ok: bool
+    #: 调用方应当返回的退出码。
+    code: int
+    #: 逐行输出（已含缩进，直接 print）。
+    lines: list[str] = field(default_factory=list)
+    state: str = BASELINE_ABSENT
+    #: 这次写会让基线**变长**的键（= 想把新问题冻成默认）。
+    added: list[str] = field(default_factory=list)
+    #: 这次写会让基线**缩短**的键（= 已修）。
+    removed: list[str] = field(default_factory=list)
+    #: 查账时发现的过期键（基线里有、当下不命中）。
+    stale: list[str] = field(default_factory=list)
+    #: 查账时发现的**不在账内**的新键（当下 − 基线）。
+    fresh: list[str] = field(default_factory=list)
+    #: 机读计数行（ADR-0011 D1.2 要求 `scanned=… baseline=… stale=… new=…`）。
+    counts: str = ""
+
+
+def baseline_state(baseline: Baseline) -> str:
+    """基线眼下处于三种状态里的哪一种。
+
+    ``empty`` 与 ``absent`` 必须分开：空文件是「存量已清零」这条**已得出的结论**，
+    而缺失是「从未记过账」。前者再变长就是把新问题藏进默认，后者是第一次建账 ——
+    混成一种状态，就只能二选一：要么放过第一次建账，要么逼人给首次建账也加开关。
+    """
+    if not baseline.path.is_file():
+        return BASELINE_ABSENT
+    return BASELINE_PRESENT if baseline.keys else BASELINE_EMPTY
+
+
+def _sample_keys(keys: list[str], limit: int = 3, width: int = 110) -> str:
+    """键的样本：够人认出是哪一条，又不会把日志淹成一行墙。"""
+    shown = "; ".join(key if len(key) <= width else key[:width] + "…" for key in keys[:limit])
+    if len(keys) > limit:
+        shown += f"（其余 {len(keys) - limit} 个略）"
+    return shown
+
+
+def baseline_write(
+    baseline: Baseline,
+    findings: list[Finding],
+    root: Path,
+    *,
+    allow_growth: bool = False,
+    reason: str = "",
+) -> BaselineRevision:
+    """把当下的 findings 冻结成基线；**默认拒绝「纯增长」**。
+
+    ADR-0011 D1.3 的两分法（不是「任何增长都拒」）：
+
+    * **纯增长**（旧键集 ⊂ 新键集：一条都没修好，只是长胖）⇒ 拒绝写入，除非
+      ``allow_growth``。这是唯一会把新问题**藏进默认**的形态。
+    * **混账 / 收缩**（有修好，可能也有新增）⇒ 允许写，但必须先打出
+      ``-fixed <n>`` / ``+new <n>`` 两列：长度可能不变或变长，读者必须一眼看见
+      「哪几条是这次修好的、哪几条是这次接管的」。
+
+    收缩永远免费 —— 基线缩短的唯一合法解释就是"问题被修了"，那是棘轮在正转。
+
+    拒绝时**不碰文件**（连父目录都不建）：为了证明"什么都没发生"，输出里给出
+    落点，调用方可以自己 sha256 前后对比 —— 一个拒绝了却写了一半的基线，
+    比干脆写下去更难查。
+    """
+    state = baseline_state(baseline)
+    new_keys = {finding.key for finding in findings}
+    added = sorted(new_keys - baseline.keys)
+    removed = sorted(baseline.keys - new_keys)
+    revision = BaselineRevision(ok=False, code=EXIT_BLOCKING, state=state,
+                                added=added, removed=removed)
+    where = display_path(baseline.path, root)
+    scope = display_scope(baseline.path, root)
+    # 纯增长：旧 ⊆ 新 且 旧 ≠ 新（空账本被撑长同样算 —— 那是「存量已清零」这条
+    # 结论被悄悄推翻）。``{} ⊆ X`` 恒真，所以零键基线必须单独判，否则它最松。
+    pure_growth = (state != BASELINE_ABSENT and baseline.keys != new_keys
+                   and (not baseline.keys or baseline.keys < new_keys))
+
+    if pure_growth and not allow_growth:
+        existing = (f"既有基线 {len(baseline.keys)} 键" if state == BASELINE_PRESENT
+                    else "既有基线为空（存量已清零的记录）")
+        revision.lines = [
+            f"refused to write baseline {baseline.path.resolve()}",
+            f"  基线 {where} [{scope}] {existing}；本次是**纯增长**：新增 {len(added)} 键、"
+            f"修好 0 键（{len(baseline.keys)} → {len(new_keys)}）：{_sample_keys(added)}",
+            "  基线只许因「已修」而缩短：把新问题冻进默认，等于让它以后永远不再被拦"
+            " —— 比不加基线更坏。",
+            "  若这些确实是本次要一并接管的存量（已逐条复核过），显式加"
+            " --allow-baseline-growth（建议同时给 --reason \"...\"），并在提交信息里写明理由。",
+            "  未写入：基线文件保持原样（字节未变）。",
+        ]
+        return revision
+
+    baseline.write(findings)
+    revision.ok = True
+    revision.code = EXIT_OK
+    revision.lines = [
+        f"wrote baseline {baseline.path.resolve()} ({len(new_keys)} key(s))"
+        f" [{scope}]" + (" [首次建账]" if state == BASELINE_ABSENT else ""),
+    ]
+    if state != BASELINE_ABSENT:
+        # 两列账目（D1.3）：一次写到底是「修了几条」还是「接管了几条」，
+        # 不许只有一个总数 —— 总数相等的一删一增，读起来和"什么都没变"一样。
+        revision.lines.append(f"  -fixed {len(removed)}  +new {len(added)}")
+    if pure_growth:
+        # 走到这里的纯增长只能是 allow_growth 放行的：放行也必须说出来 ——
+        # 一次被允许的增长，日志里留不下痕迹就还是静默增长。
+        revision.lines.append(
+            f"  已允许增长：+{len(added)} 键（--allow-baseline-growth）：{_sample_keys(added)}")
+        revision.lines.append(
+            f"  reason: {reason.strip()}" if reason.strip()
+            else "  未给 --reason：提交信息里必须写明「为什么这次可以变长」。")
+    elif added and state != BASELINE_ABSENT:
+        # 混账不是放行：它按 ADR D1.3 本来就允许写。措辞必须与「已允许增长」分开，
+        # 否则读日志的人分不清"这次是政策允许的"和"这次是有人按了开关的"。
+        revision.lines.append(
+            f"  混账：修好 {len(removed)} 键的同时新增 {len(added)} 键 ⇒ 按 ADR-0011 D1.3 "
+            f"允许写（无需开关）；新增：{_sample_keys(added)}")
+    if state == BASELINE_ABSENT:
+        # 残余缺口（与 ESLint 同一处）：删掉基线文件再 --write-baseline 会绕过增长拦阻。
+        # 机制层拦不住"从没记过账"这个借口，只能让它在日志和 diff 里留下痕迹。
+        revision.lines.append(
+            f"  首次建账：{len(new_keys)} 键全部按存量接管；若此前曾有基线，"
+            "删除后重写会绕过增长拦阻 —— 提交前看 git diff 里那份文件是不是被整体重写了。")
+    return revision
+
+
+def baseline_check(
+    baseline: Baseline,
+    findings: list[Finding],
+    root: Path,
+    *,
+    pass_on_stale: bool = False,
+    scanned: int | None = None,
+) -> BaselineRevision:
+    """查账：基线里当下已不再命中的键就是**过期账单**，默认判红。
+
+    过期不是小事：要么问题修好了（那就该 ``--write-baseline`` 让它缩短），
+    要么它被豁免或移出了判定范围（那账本本身在说谎）。两种情况的修法不同，
+    但"继续留着"永远不对 —— 账本只增不减，久了没人敢信它。
+
+    ``pass_on_stale`` 只为人放行：本地重构到一半、账本先不清是常态。CI 里用
+    它是自杀 —— 一次放行之后，后续所有的 stale 都被同一句话盖住，账本从此
+    不可信，而屏幕上永远只有一行绿。ADR-0011 D1.4 因此把它在 CI 下判成用法错误
+    （见 :func:`ratchet_human_only`）。
+
+    输出里必带机读计数行 ``scanned=<n> baseline=<n> stale=<n> new=<n>``（D1.2）：
+    「挂了 12 条」与「一条都没有」在只有 exit code 的日志里长得一样，这四个数
+    是唯一能区分它们的证据。
+    """
+    state = baseline_state(baseline)
+    where = display_path(baseline.path, root)
+    scope = display_scope(baseline.path, root)
+    stale = baseline.stale(findings) if state != BASELINE_ABSENT else []
+    fresh = sorted({finding.key for finding in findings} - baseline.keys)
+    counts = (f"scanned={len(findings) if scanned is None else scanned}"
+              f" baseline={len(baseline.keys)} stale={len(stale)} new={len(fresh)}")
+    if state == BASELINE_ABSENT:
+        return BaselineRevision(
+            ok=True, code=EXIT_OK, state=state, fresh=fresh, counts=counts,
+            lines=[f"baseline: {where} 不存在 ⇒ 棘轮失效，本次按全量判定"
+                   "（要冻结存量用 --write-baseline）",
+                   f"  counts: {counts}"])
+    revision = BaselineRevision(ok=not stale or pass_on_stale, code=EXIT_OK,
+                                state=state, stale=stale, removed=stale,
+                                fresh=fresh, counts=counts)
+    head = f"baseline: {where} [{scope}] ({len(baseline.keys)} key(s)"
+    if not stale:
+        revision.lines = [head + ", 无过期键)", f"  counts: {counts}"]
+        return revision
+    if pass_on_stale:
+        revision.lines = [
+            head + f", 过期 {len(stale)} 键 —— 已按 --pass-on-stale 放行（CI 禁止使用）)"
+            f"：{_sample_keys(stale)}",
+            f"  counts: {counts}",
+        ]
+        return revision
+    revision.code = EXIT_BLOCKING
+    revision.lines = [
+        head + f", 过期 {len(stale)} 键)",
+        f"  -stale {_sample_keys(stale)}",
+        "  要么它们已被修好（跑 --write-baseline 让基线缩短），要么它们已被豁免/移出判定范围"
+        "（账本要跟着改）；两种修法不同，继续留着永远不对。",
+        "  本地应急可加 --pass-on-stale 放行；CI 禁止使用 —— 放行一次，账本就失真一次。",
+        f"  counts: {counts}",
+    ]
+    return revision
+
+
+def add_ratchet_argument(parser) -> None:
+    """装上双向棘轮的开关（试点期只有 g19 调用，2.4.x 再逐门禁接线）。
+
+    刻意**不**并进 ``add_baseline_argument``：那会让其余 16 道门禁的 ``--help``
+    声明几个它们并不遵守的开关 —— 一个只是嘴上有的开关，比没有更坏。
+    """
+    parser.add_argument(
+        "--allow-baseline-growth", action="store_true", dest="allow_baseline_growth",
+        help="写入基线时纯增长默认拒绝；显式给出才允许（需在提交信息里写明理由）")
+    parser.add_argument(
+        "--pass-on-stale", action="store_true", dest="pass_on_stale",
+        help="查账时存在过期键默认判红；显式给出才放行（仅限本地，CI 下为用法错误）")
+    parser.add_argument(
+        "--reason", default="", help="写入基线时的理由，随增长一起打印（记进提交信息与评审）")
+    parser.add_argument(
+        "--ci", action="store_true",
+        help="声明处于 CI：人手专用开关（--pass-on-stale / --allow-baseline-growth）在此模式下退 2")
+
+
+#: 只给人用的开关：CI 下出现即用法错误（ADR-0011 D1.4）。
+HUMAN_ONLY_SWITCHES = (("pass_on_stale", "--pass-on-stale"),
+                       ("allow_baseline_growth", "--allow-baseline-growth"))
+
+
+def in_ci(flag: bool = False) -> bool:
+    """是否处于 CI。``--ci`` 显式声明优先，否则读 ``CI`` 环境变量。
+
+    值判据写死成几个已知的真值而不是"非空即为真"：`CI=0`、`CI=false` 是有人在
+    明确关掉它，把它读成真会把一台开发机的本地放行判成用法错误 —— 误伤比漏判
+    更难查，因为它的症状是「本地好好的，CI 红」的反面。
+    """
+    if flag:
+        return True
+    return os.environ.get("CI", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def ratchet_human_only(args) -> list[str]:
+    """列出「在 CI 下不该出现的人手开关」。空列表 = 允许继续。
+
+    单独成函数而不是塞进 ``main``：这样 ``--selfcheck`` 能直接证明这条拦阻真的会响
+    （给它一个 Namespace 就够了），而不必真的去 fork 一个带 ``CI=1`` 的子进程。
+    """
+    if not in_ci(bool(getattr(args, "ci", False))):
+        return []
+    return [name for attribute, name in HUMAN_ONLY_SWITCHES if getattr(args, attribute, False)]
+
+
+# --------------------------------------------------------------------------- #
+# 双向棘轮的自检（供任何门禁的 --selfcheck 调用）
+# --------------------------------------------------------------------------- #
+
+
+def ratchet_selfcheck(check: SelfCheck) -> None:
+    """在门禁的 ``--selfcheck`` 里证明双向棘轮**真的会红**。
+
+    五组负对照在这里一次定义，2.4.x 铺开时每道门禁只要调一次本函数，就有了与
+    g19 逐字相同的证明 —— 否则 16 份"我自己也测过"会各自漂移。
+
+    计数器口径：``detects`` 记「机制按设计动了」的断言（拦、放行、收缩都算它动了），
+    ``quiet`` 记「不该有声时没有声」的断言。两者都不是"我跑通了"，都有明确的反面。
+    """
+    import argparse
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="gov-ratchet-") as workspace:
+        folder = Path(workspace)
+
+        def fixture(name: str, keys: list[str]) -> Baseline:
+            path = folder / name
+            path.write_text("\n".join(["# baseline"] + keys) + "\n", encoding="utf-8",
+                            newline="\n")
+            return Baseline(path).load()
+
+        def finding(key: str) -> Finding:
+            return Finding(path="a.md", line=1, text=key.split("|")[0], kind="path-ref", key=key)
+
+        a, b = "a.md|aaa|path-ref", "b.md|bbb|path-ref"
+
+        # 1. **纯增长**（旧 ⊂ 新，一条没修）：拒绝写、退出非 0、**字节不变**。
+        grown = fixture("grow.txt", [a])
+        before = grown.path.read_bytes()
+        refused = baseline_write(grown, [finding(a), finding(b)], folder)
+        check.detects("ratchet/pure-growth-refused",
+                      refused.code != EXIT_OK and grown.path.read_bytes() == before)
+
+        # 2. 同一场景加开关：写入成功，且输出明说"已允许增长"。
+        allowed_baseline = fixture("allow.txt", [a])
+        allowed = baseline_write(allowed_baseline, [finding(a), finding(b)], folder,
+                                 allow_growth=True)
+        check.detects("ratchet/growth-opt-in-named",
+                      allowed.code == EXIT_OK
+                      and b in Baseline(allowed_baseline.path).load().keys
+                      and any("已允许增长" in line for line in allowed.lines))
+
+        # 3. **混账**（既修好又新增）：允许写，但账目必须两列都报出来。
+        #    这条是 ADR-0011 D1.3 与「任何增长都拒」的分界：正常收账不该被拦，
+        #    但读者必须看见"修了 1 条、接管了 1 条"，而不是只看到一个总数。
+        mixed_baseline = fixture("mixed.txt", [a, b])
+        mixed = baseline_write(mixed_baseline, [finding(a), finding("c.md|ccc|path-ref")], folder)
+        check.detects("ratchet/mixed-growth-reported",
+                      mixed.code == EXIT_OK
+                      and any("-fixed 1" in line and "+new 1" in line for line in mixed.lines))
+
+        # 4. 收缩永远免费（只许因已修而缩短 —— 这正是正转）。
+        shrunk = fixture("shrink.txt", [a, b])
+        shrink = baseline_write(shrunk, [finding(a)], folder)
+        check.detects("ratchet/shrink-allowed",
+                      shrink.code == EXIT_OK
+                      and Baseline(shrunk.path).load().keys == {a})
+
+        # 5. 过期账单：判红并指名 stale 键。
+        stale_baseline = fixture("stale.txt", [a, b])
+        stale = baseline_check(stale_baseline, [finding(a)], folder, scanned=1)
+        check.detects("ratchet/stale-blocked",
+                      stale.code != EXIT_OK and stale.stale == [b])
+
+        # 6. --pass-on-stale：退 0，但 stale 键仍在输出里（放行 ≠ 装作没看见）。
+        passed = baseline_check(stale_baseline, [finding(a)], folder, pass_on_stale=True)
+        check.detects("ratchet/stale-passed-but-printed",
+                      passed.code == EXIT_OK and any(b in line for line in passed.lines))
+
+        # 7. 机读计数行（D1.2）：只有 exit code 的日志里「挂了 12 条」与「一条都没有」一样。
+        exact = fixture("counts.txt", [a])
+        exact_revision = baseline_check(exact, [finding(a)], folder, scanned=1)
+        check.detects("ratchet/counts-line-machine-readable",
+                      any("scanned=1 baseline=2 stale=1 new=0" in line for line in stale.lines)
+                      and any("scanned=1 baseline=1 stale=0 new=0" in line
+                              for line in exact_revision.lines))
+
+        # 8. ADR-0011 D1.4：人手开关在 CI 下是**用法错误**，不是放行。
+        check.detects("ratchet/human-only-in-ci-rejected",
+                      ratchet_human_only(argparse.Namespace(ci=True, pass_on_stale=True,
+                                                            allow_baseline_growth=False))
+                      == ["--pass-on-stale"]
+                      and ratchet_human_only(argparse.Namespace(ci=False, pass_on_stale=True,
+                                                                allow_baseline_growth=True)) == [])
+
+        # 9. 账本与现状一致：退 0，且没有任何过期噪声。
+        #    断言不能只搜"过期"二字：干净时的输出是「…, 无过期键)」，搜子串会自伤
+        #    （selfcheck 立刻报 misreport）—— 噪声的定义是**喊有 stale**，不是提到这个词。
+        quiet = baseline_check(exact, [finding(a)], folder)
+        check.quiet("ratchet/exact-match-silent",
+                    quiet.code != EXIT_OK or bool(quiet.stale)
+                    or any("-stale" in line or "STALE" in line for line in quiet.lines))
 
 
 # --------------------------------------------------------------------------- #

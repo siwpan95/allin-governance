@@ -1,5 +1,35 @@
 # 变更记录
 
+## 2.4.0 —— 2026-11-25
+
+**判据开始计量自己的工作量。** 三件事：基线从"只拦新增"升级为**双侧棘轮**；`g15` 补上 `scanned`；`g15` 自检的负对照从"能打印"变成"能判"。
+
+### 新增
+
+| 机制 | 语义 | 借鉴 |
+| --- | --- | --- |
+| 基线双侧棘轮（`g19` 试点） | **纯增长**（一条没修好、只是长胖）拒绝写入并退 1；**混账**（既修又新）允许写，但强制打印 `-fixed <n> +new <n>` 两列；基线里存在**当下已不命中**的键（stale）⇒ 退 1 并逐条指名，提示 prune | ESLint bulk suppressions（MIT）：抑制记数量、超量全报、残留逼 prune |
+| CI 硬拦 | `CI=1` 或 `--ci` 下出现 `--pass-on-stale` / `--allow-baseline-growth` ⇒ **exit 2**（判在参数解析，不是文档约束） | 同上 |
+| 机读计数行 | 每次查账打印 `counts: scanned=<n> baseline=<n> stale=<n> new=<n>` | 同上；"只有退出码的日志里，挂 12 条和一条都没有长得一样" |
+| `g15-docs-contract` 补 `scanned` | 判定面 = `docs/` 去历史树与 ASCII 别名目录，实测 **141**；输出加 `scanned N file(s)`，保留旧 `blocking=… new=…` 形态（历史执行记录引用它） | ADR-0011 D3 |
+
+### 修正
+
+- **`g15` 自检的 `MISSED case not caught` 原来只 `print`**，不计载荷、不改退出码 —— 把判红整段删掉，自检**照样 exit 0**。现计入 selfcheck 并影响退出码（`caught 24 → 26`），两条新用例各自做过变异测试：删盲门判红 → `MISSED empty-hub` + exit 1；不再记 SKIP → `MISSED no-index` + exit 1。
+- `g19` 自检 `4/3 → 12/4`（新增 8 条棘轮 detects + 1 条 quiet）。
+
+### 判据未放宽（实测）
+
+- `g19` 判 `allin`：`scanned 88 / blocking 0 / exempted 350 / exit 0`，hostname 豁免 3+3 不变。
+- `g15` 判 `allin`：`exempted` 36 项与 2.3.1 **逐字相同**，`blocking=0` 一致；唯一差别是多出 `scanned 141`（与 `D1-registered=141` 自洽）。
+- `--selfcheck-all`：**20/20 clean**。
+
+### 已知（未落，勿当作已实现）
+
+- 基线键的 `count:<n>` 格式与 `# written: <ISO> commit:<sha> reason:<原话>` 头部元数据**未落** —— 需 17 份基线同改，单点先落会把"试点"变成"试点即破格式"，留 2.4.x 批量。
+- `g06-numbering` 在本仓与消费仓均为 **0 对象**（`git ls-files` 无 `*.zh.md` / `vN.*`）。它记的是 `skipped`（理由与判定同屏、可复核），不是 `blind`、也不是 `pass`。但"永远是 SKIP"应当是被 owner 登记过的决定，不是没人注意到的默认。
+- 删掉基线文件再 `--write-baseline` 仍可绕过增长拦阻（ESLint 同一缺口）。缓解：首建账输出明写"提交前看 `git diff` 是否被整体重写"，把绕过变成 diff 可见 —— 不是机制，是可见性。
+
 ## 2.3.1 —— 2026-11-25
 
 **判据的读取路径跟上提仓**：不再假设"套件在本仓"。
