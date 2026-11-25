@@ -58,6 +58,13 @@ packages = [
   "allin_governance._gatesuite",
   "allin_governance._gatesuite.gates",
   "allin_governance._gatesuite.runtime",
+  # 三个**纯数据目录**（baseline 棘轮 / preset 基准 / ledger 模板）：
+  # Python 视其为「可导入包」但不在 packages 里时，setuptools 每次构建都打
+  # 「Package would be ignored」警告 —— 长期告警正是下一个人忽略真告警的开始。
+  # 显式登记后警告消失，package-data 的 glob 照旧生效。
+  "allin_governance._gatesuite.baseline",
+  "allin_governance._gatesuite.preset",
+  "allin_governance._gatesuite.ledger",
   "allin_governance._toolkit",
   "allin_governance._toolkit.pytrunner",
   "allin_governance._github",
