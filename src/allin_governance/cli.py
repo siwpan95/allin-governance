@@ -406,6 +406,73 @@ def _cmd_publish(argv: list[str]) -> int:
         return int(code) if isinstance(code, int) else (0 if code is None else 1)
 
 
+
+
+def _cmd_ml(argv: list[str]) -> int:
+    """文本分类骨架：TextCNN 打底、规则降级（只服务软判断）。
+
+    子命令：train（从记忆/月账语料训 TextCNN）/ eval（模型 vs 规则）/ route（对给定文本路由）
+    硬判据（D1–D19）不走这里 —— 见 `_ml/__init__.py` 的硬边界说明。
+    torch 不在 dependencies，走 `pip install 'allin-governance[ml]'`。
+    """
+    import argparse as _ap
+
+    from allin_governance._ml import TORCH_AVAILABLE
+    from allin_governance._ml import dataset as _ds
+    from allin_governance._ml import router as _rt
+    from allin_governance._ml import train as _tr
+
+    ap = _ap.ArgumentParser(prog="allin-governance ml", description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    t1 = sub.add_parser("train", help="训练 TextCNN（需 torch）")
+    t1.add_argument("--docs", default=".", help="文档枢纽根（含 记录/记忆/）")
+    t1.add_argument("--out", default="model.pt")
+    t1.add_argument("--epochs", type=int, default=8)
+
+    t2 = sub.add_parser("eval", help="模型 vs 规则：准确率与一致率")
+    t2.add_argument("--model", required=True)
+    t2.add_argument("--docs", default=".")
+
+    t3 = sub.add_parser("route", help="对给定文本做路由（拿不准就走规则）")
+    t3.add_argument("text", nargs="+")
+    t3.add_argument("--model", default=None)
+    t3.add_argument("--min-score", type=float, default=0.55)
+
+    t4 = sub.add_parser("corpus", help="只看语料统计（不训练）")
+    t4.add_argument("--docs", default=".")
+
+    args = ap.parse_args(argv)
+    if not TORCH_AVAILABLE and args.cmd in ("train", "eval"):
+        print("torch 未安装：pip install 'allin-governance[ml]'", flush=True)
+        print("（骨架仍可用：ml route / ml corpus 走规则降级，不需要 torch）")
+        return 3
+
+    if args.cmd == "train":
+        r = _tr.train(args.docs, args.out, epochs=args.epochs)
+        return 0 if r.get("ok") else 1
+    if args.cmd == "eval":
+        r = _tr.evaluate(args.model, args.docs)
+        return 0 if r.get("ok") else 1
+    if args.cmd == "corpus":
+        s = _ds.load_memory(args.docs)
+        tr, va = _ds.split([x for x in s if x.date])
+        print(f"抽到 {len(s)} 条（可训 {len([x for x in s if x.date])}）")
+        print(f"  train {len(tr)} {_ds.stats(tr)}")
+        print(f"  val   {len(va)} {_ds.stats(va)}")
+        return 0
+    # route
+    r = _rt.Router(model_path=args.model, min_score=args.min_score)
+    print(r.describe())
+    for i, res in enumerate(r.predict(args.text)):
+        d = res.as_dict()
+        tag = "← 分歧" if d["disagreement"] else ""
+        print(f"  {args.text[i][:34]:36} → {d['final']['label']:11} "
+              f"[{d['final']['source']}] {tag}")
+    print("  ", r.stats.summary())
+    return 0
+
+
 #: 子命令表。新增能力只需在这里加一行，**不要**新开一个顶层入口点。
 SUBCOMMANDS: dict[str, tuple[str, object]] = {
     "repocheck": ("离线仓库体检：30 条规则，给出 0-10 健康分与 error/warn/info 三级问题", _cmd_repocheck),
@@ -416,6 +483,7 @@ SUBCOMMANDS: dict[str, tuple[str, object]] = {
     "github": ("GitHub 建仓/推送/三端巡检（gitee 为权威）；github-sync 子命令走巡检器", _cmd_github),
     "gitee": ("Gitee 建仓/转公开/发发行版（权威端）；与 github 子命令配对成双核", _cmd_gitee),
     "publish": ("PyPI 发版链路：check/build/verify/upload/release —— 双产物是硬判据", _cmd_publish),
+    "ml": ("文本分类骨架：TextCNN 打底 + 规则降级（只服务软判断；torch 为可选依赖）", _cmd_ml),
     "secrets-scan": ("离线凭据扫描：21 条高精度规则 + 按字符集分档的熵闸（不需要 gitleaks 二进制）",
                      _cmd_secrets_scan),
     "facts": ("机器事实：采集本机（盘/运行时/工具链）＋ 校验分区文件断言（measure / verify）",

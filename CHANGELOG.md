@@ -1,5 +1,54 @@
 # 变更记录
 
+## 2.3.0 —— 2026-11-25
+
+**文本分类骨架：TextCNN 打底，规则降级**（全哥定的结构）。
+
+### 交付
+
+| 模块 | 职责 |
+| --- | --- |
+| `_ml/protocol.py` | 协议层：`Prediction(label, score, source)` / `TextClassifier` —— 只依赖标准库 |
+| `_ml/fallback.py` | 降级：关键词规则（永远可用），**也是标签口径的唯一准绳** |
+| `_ml/textcnn.py` | 底座：TextCNN（Kim 2014 三核并行，CPU 分钟级）；torch **延迟导入** |
+| `_ml/router.py` | 路由：模型 ≥ 阈值走模型，否则降级；**不一致时两边都留档** |
+| `_ml/dataset.py` | 语料：记忆月账 + 各机月账条目（标签来自 `[tag]`） |
+| `_ml/train.py` | 训练与评估（每次打印基线，防"准确率幻觉"） |
+
+CLI：`allin-governance ml train|eval|route|corpus`
+依赖：`pip install 'allin-governance[ml]'` —— **torch 不进 `dependencies`**，
+没装时骨架照常可用（`route`/`corpus` 走规则）。
+
+### 实测结果（诚实的负结果）
+
+语料：`docs/记录/记忆/` 339 条 → 归一化 5 类（governance 120/agent 90/tooling 56/其他 47/fact 24）
+→ 去重后 train 266 / val 63。
+
+```
+基线（多数类占比）= 0.317
+epoch 1..8  val_acc = 0.317 / 0.317 / 0.302 / 0.333 / 0.317 / 0.302 / 0.365 / 0.302
+最终 val_acc = 0.302  ← 低于基线
+混淆：governance→agent 13 / 其他→agent 8 / agent→governance 5 / tooling→agent 5
+```
+
+**结论：pipeline 通了，模型无效。** 266 条 / 5 类训不出可用分类器（元宝那篇说"几千条"
+是有道理的）。模型把 governance 大量判成 agent，说明它学到的是**类别大小**而非特征。
+
+配套事实：模型与规则**分歧 73%（44/60）**——分岐本身是有价值的信号，
+说明规则抓到的东西模型没抓到（反之亦然）。
+
+### 骨架仍然成立的理由
+
+1. **降级链路实测可用**：无 torch → 全程 fallback（分类正确）；有权重但置信度低 → 回落规则；
+2. **底座随时可换**：`TextClassifier` 协议与实现无关，将来换 embedding/小模型不用改调用方；
+3. **接口把「谁给的结论」变成一等公民**：`Prediction.source` 强制标 `textcnn`/`fallback`，
+   治理系统的输出不许说不清来源。
+
+### 硬边界（写进 `_ml/__init__.py`，防止骨架搭错层）
+
+**硬判据不许概率化。** 路径存在性、序号连续、断链、版本集合相等是事实判定；
+一旦变成"模型说 92% 概率通过"，治理就失去依据。本包只服务软判断。
+
 ## 2.2.2 —— 2026-11-25
 
 **修 2.2.1 漏掉的第二处迁包缺陷：`gitee_release.main()` 签名不接受 argv。**
