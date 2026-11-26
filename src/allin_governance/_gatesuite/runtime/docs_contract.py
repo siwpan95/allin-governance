@@ -676,7 +676,15 @@ def check_d14(docs: str, root: str, files: list[str], rep) -> None:
                 if adjacent_target(tgts, line, rm.start()):
                     rep.exempt("D14-already-by-D9")
                     continue
-                before = line[max(0, rm.start() - 12):rm.start()]
+                # 窗口按**可见字符**数 12 个，Markdown 装饰符（* _ `）不计：
+                # `交接卷 **2026-09** §五十九` 里装饰符会吃掉窗口，把本来合格的
+                # 限定词挤出 12 字符外（2026-11-26 实测：这正是"自然写法被判裸 §"的真因）。
+                _i, _vis = rm.start() - 1, 0
+                while _i >= 0 and _vis < 12:
+                    if line[_i] not in "*_`":
+                        _vis += 1
+                    _i -= 1
+                before = line[max(0, _i + 1):rm.start()]
                 if any(q in before for q in DOC_QUALIFIERS):
                     rep.exempt("D14-qualified")
                     continue

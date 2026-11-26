@@ -59,6 +59,16 @@ REQUIRED_SWITCHES = ("--selfcheck", "--quiet", "--baseline", "--no-baseline", "-
 SELFCHECK_LINE = re.compile(r'^SELFCHECK (\{"caught":\d+,"clean":\d+,"misreports":\d+\})$', re.MULTILINE)
 SELFCHECK_TIMEOUT_SECONDS = 600
 
+#: 门禁可选声明的「扫描域」（见 registry.json 顶层 comment 的 `scope` 段）。
+#: **缺省 = 未声明 = 不可判定**，不是「全部」也不是「无」。这个字段的价值全在
+#: 「声明了就一定为真」上，所以这里只校验**形状**（能不能被当真），不猜语义：
+#: 语义要靠 `scripts/verify_gate_scope.py` 用探针文件实测 scanned 才会红。
+SCOPE_KEY = "scope"
+SCOPE_EXCLUDE_KEY = "scope_exclude"
+#: 这两种写法等于「什么都没声明」—— 只有**同时**给了非空 scope_exclude 才放行，
+#: 因为那时信息量在排除项上（g01 就是这种：它真的判几乎每个文本文件）。
+BLANKET_GLOBS = frozenset({"**/*", "**", "*", "**/**"})
+
 #: 与 check_arch_assets.py B 项同一命名口径。
 GATE_SCRIPT_RE = re.compile(r"^(g\d{2})_.+\.py$")
 #: registry id 形如 ``g00-meta``。
@@ -328,6 +338,52 @@ def check_numbering(identifiers: list[str], registry: dict, registry_path: Path,
                      f"（声明必须是真缺口、理由不少于 {MIN_GAP_REASON_CHARS} 字符）")
 
 
+def scope_defects(entry: dict) -> list[str]:
+    """``scope`` / ``scope_exclude`` 的形状缺陷；空列表 = 形状可当真。
+
+    只判「这个声明能不能被当真」，**不判它是不是真的**：``scope`` 说 g09 扫 ``**/*.md``
+    时，这里看不出来 —— 那要靠 ``scripts/verify_gate_scope.py`` 往仓里放一个 ``.md``
+    实测 ``scanned`` 会不会动。两件事分开的理由：形状错误是确定的（少个引号、写成
+    ``**\\*.py``、把 ``["**/*"]`` 当默认值），语义错误要跑才知道。把两者混在一处，
+    形状校验就得为了能跑而放宽。
+    """
+    defects: list[str] = []
+    scope = entry.get(SCOPE_KEY)
+    exclude = entry.get(SCOPE_EXCLUDE_KEY)
+    for key, value in ((SCOPE_KEY, scope), (SCOPE_EXCLUDE_KEY, exclude)):
+        if value is None:
+            continue
+        if not isinstance(value, list) or not value:
+            defects.append(f"{key} 必须是非空 glob 数组（当前 {value!r}）—— 未声明就不写，别写空数组")
+            continue
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                defects.append(f"{key} 里有非字符串或空项：{item!r}")
+                continue
+            token = item.strip()
+            if "\\" in token:
+                defects.append(f"{key} 用了反斜杠 `{token}`：glob 一律用 `/`（跨平台可比）")
+            if token.startswith("/") or re.match(r"^[A-Za-z]:", token):
+                defects.append(f"{key} 用了绝对路径 `{token}`：必须是相对被判仓根的路径")
+            if token.startswith("./"):
+                defects.append(f"{key} 以 `./` 起头 `{token}`：去掉前缀，glob 从仓根算")
+            if token != item:
+                defects.append(f"{key} 项有首尾空白：{item!r}")
+        duplicates = sorted({token for token in value if isinstance(token, str)
+                             and list(value).count(token) > 1})
+        if duplicates:
+            defects.append(f"{key} 有重复项：{', '.join(duplicates)}")
+    if isinstance(scope, list) and scope and not defects:
+        blankets = [token for token in scope if isinstance(token, str)
+                    and token.strip() in BLANKET_GLOBS]
+        if blankets and not (isinstance(exclude, list) and exclude):
+            defects.append(
+                f"scope 只有通配 `{blankets[0]}` 且没有 scope_exclude —— 这等于「什么都声明了」，"
+                "字段会退化成噪声。要么给出真正判的扩展名/目录，要么用 scope_exclude 说明"
+                "排除面（排除项才是信息量时，通配才成立）")
+    return defects
+
+
 def inspect(root: Path, registry_path: Path, rules_path: Path, python: str) -> Report:
     """Judge every registered gate and return the classified report."""
     report = Report(title=TITLE)
@@ -371,6 +427,8 @@ def inspect(root: Path, registry_path: Path, rules_path: Path, python: str) -> R
             continue
         if not entry["rules"]:
             report.block("registry", _rel(registry_path, root), 0, f"{identifier}: declares no rules")
+        for defect in scope_defects(entry):
+            report.block("scope", _rel(registry_path, root), 0, f"{identifier}: {defect}")
         # Registry script paths are expressed relative to the governance subtree's
         # parent (tools/gate) — matching the base run.ts uses to resolve gate
         # scripts. Derive it from the *registry file* we were handed, not the module
@@ -552,6 +610,43 @@ def selfcheck() -> int:
         clean = inspect(sandbox.path, sandbox.path / "governance/registry.json",
                         sandbox.path / "governance/RULES.md", sys.executable)
         check.quiet("a fully compliant registry", bool(clean.findings))
+
+    # 扫描域声明（2.4.x / registry `scope`）：只判**形状**能不能当真。
+    # 三种写法必须判红，两种必须闭嘴 —— 依据是「声明不可当真 = 以后没人能拿它硬判」。
+    with govlib.Sandbox() as sandbox:
+        sandbox.write("governance/gates/ok_gate.py", good_gate)
+        sandbox.write("governance/RULES.md", "# Rules\n\n| ok |\n")
+
+        def scope_entry(identifier: str, **extra) -> dict:
+            entry = {"id": identifier, "title": identifier, "script": "governance/gates/ok_gate.py",
+                     "tier": "P0", "rules": ["r1"], "platforms": ["nt", "posix"],
+                     "requires": ["python"], "selfcheck": True}
+            entry.update(extra)
+            return entry
+
+        sandbox.write("governance/registry.json", json.dumps({"version": 1, "gates": [
+            scope_entry("blanket", scope=["**/*"]),
+            scope_entry("blanket-excluded", scope=["**/*"], scope_exclude=["vendor/**"]),
+            scope_entry("backslash", scope=["**\\*.py"]),
+            scope_entry("empty", scope=[]),
+            scope_entry("shadow", scope=["**/*.py", "**/*.py"]),
+            scope_entry("undeclared"),
+        ]}) + "\n")
+        scoped = inspect(sandbox.path, sandbox.path / "governance/registry.json",
+                         sandbox.path / "governance/RULES.md", sys.executable)
+        scope_blocks = [finding.text for finding in scoped.findings if finding.kind == "scope"]
+        check.detects("scope declared as a bare blanket glob",
+                      any(text.startswith("blanket:") for text in scope_blocks))
+        check.detects("scope with a backslash separator",
+                      any(text.startswith("backslash:") for text in scope_blocks))
+        check.detects("scope declared as an empty array",
+                      any(text.startswith("empty:") for text in scope_blocks))
+        check.detects("scope with a duplicated glob",
+                      any(text.startswith("shadow:") for text in scope_blocks))
+        check.quiet("blanket scope narrowed by scope_exclude (the exclusion carries the meaning)",
+                    any(text.startswith("blanket-excluded:") for text in scope_blocks))
+        check.quiet("a gate that declares no scope at all (undeclared = undecidable, not 'everything')",
+                    any(text.startswith("undeclared:") for text in scope_blocks))
 
     with govlib.Sandbox() as sandbox:
         sandbox.write("governance/gates/ok_gate.py", good_gate)

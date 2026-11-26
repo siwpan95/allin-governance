@@ -57,6 +57,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 # Make the shared governance runtime importable regardless of the caller's cwd
 # (run.ts spawns this gate from tools/gate, not from the repo root).
@@ -377,6 +378,19 @@ def load_baseline(root: str) -> set[str]:
 
 
 def emit(rep: Report, args, baseline: set[str]) -> int:
+    # 基线头部元数据（ADR-0011 D1.1/D1.3）的判定**不另写一份**：口径在
+    # govlib.baseline_header_verdict 里一次定义。本门禁的 body 是自有的
+    # `code|message` 键（不是 govlib 的 finding key），所以只接"头"这一半：
+    # 旧格式（无头）只 WARN；新格式缺 written/commit/reason 判红。
+    header_verdict = govlib.baseline_header_verdict(Path(baseline_path(args.root)), args.root) \
+        if os.path.isfile(baseline_path(args.root)) else None
+    if header_verdict is not None:
+        if header_verdict.warning and not args.quiet:
+            print(header_verdict.warning)
+        if header_verdict.state == "v2-defective":
+            rep.block("baseline-header",
+                      "基线头不完整（新格式必须带 written/commit/reason）："
+                      + "；".join(header_verdict.defects))
     new_block = [(c, m) for (c, m) in rep.blocking if ("%s|%s" % (c, m)) not in baseline]
     known = len(rep.blocking) - len(new_block)
 
@@ -407,6 +421,13 @@ def emit(rep: Report, args, baseline: set[str]) -> int:
         p = baseline_path(args.root)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with io.open(p, "w", encoding="utf-8", newline="\n") as f:
+            # 头部与 govlib 同一实现/同一措辞：基线文件在哪个仓里长得都得一样。
+            f.write("\n".join(govlib.baseline_header_lines(
+                written=govlib.utc_stamp(),
+                commit=govlib.commit_of(govlib.discover_root(Path(p))),
+                reason=args.reason if getattr(args, "reason", "") else "",
+                body_note="# body: <code>|<message> —— 本门禁自有键格式"
+                          "（docs_contract.Report），不是 govlib 的 finding key")) + "\n")
             f.write("# docs_index 基线（存量一次性固化；清完后应重写为空）\n")
             for c, m in sorted(set(rep.blocking)):
                 f.write("%s|%s\n" % (c, m))

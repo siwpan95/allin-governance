@@ -1,6 +1,9 @@
-# Baseline ratchet for this gate. One finding key per line.
-# Refresh only after the remaining findings were reviewed in full:
-#   python governance/gates/<gate>.py --no-baseline --list-all
+# format: 2
+# written: 2026-11-25T23:40:26Z
+# commit: 0e8270d1fadd9040c64da3674e770bef8f9eaec7
+# reason: 2.4.x 格式迁移，内容未变
+# count:<n> <key> —— 抑制额度：同一键最多抑制 n 条，超量则整组全报（ESLint 口径）。
+# 刷新前逐条复核：python governance/gates/<gate>.py --no-baseline --list-all
 #
 # 2026-10-27 状态：本门禁已通过「内容层清理」彻底清偿 —— 全部机器相关绝对路径
 # （scan_hardcoded.ps1 自检夹具、repo_hygiene_exemptions.csv 数据行、venv_security.py

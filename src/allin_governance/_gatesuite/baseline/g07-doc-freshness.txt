@@ -1,4 +1,7 @@
-# Baseline ratchet for this gate. One finding key per line.
-# Refresh only after the remaining findings were reviewed in full:
-#   python governance/gates/<gate>.py --no-baseline --list-all
-docs/记录/交接/2026-08.md|20d1bcc665103dbb|snapshot-without-expiry
+# format: 2
+# written: 2026-11-25T23:40:26Z
+# commit: 0e8270d1fadd9040c64da3674e770bef8f9eaec7
+# reason: 2.4.x 格式迁移，内容未变
+# count:<n> <key> —— 抑制额度：同一键最多抑制 n 条，超量则整组全报（ESLint 口径）。
+# 刷新前逐条复核：python governance/gates/<gate>.py --no-baseline --list-all
+count:1 docs/记录/交接/2026-08.md|20d1bcc665103dbb|snapshot-without-expiry

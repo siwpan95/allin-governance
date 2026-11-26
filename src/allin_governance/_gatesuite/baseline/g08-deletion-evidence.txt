@@ -1,6 +1,9 @@
-# Baseline ratchet for this gate. One finding key per line.
-# Refresh only after the remaining findings were reviewed in full:
-#   python governance/gates/<gate>.py --no-baseline --list-all
+# format: 2
+# written: 2026-11-25T23:40:26Z
+# commit: 0e8270d1fadd9040c64da3674e770bef8f9eaec7
+# reason: 2.4.x 格式迁移，内容未变
+# count:<n> <key> —— 抑制额度：同一键最多抑制 n 条，超量则整组全报（ESLint 口径）。
+# 刷新前逐条复核：python governance/gates/<gate>.py --no-baseline --list-all
 #
 # 2026-11-24（@SIWPAN）：下面这条**不是**能力退役，是**迁移**。
 #   5 份基线台账由 git mv 从 `tools/gate/audit/` 移到 `tools/gate/governance/ledger/`，
@@ -10,4 +13,4 @@
 #     · docs/记录/交接/2026-11.md §205.2（迁了什么）/ §205.3（6 处读取方逐项）
 #     · 紧随其后的那笔提交信息（附同样的表）
 #   冻结它 = 「这条已复核、不再新增同类」，不是「以后不用写证据」。
-commit 4c8e5820|ffd3d49458ca98b1|deletion-without-evidence
+count:1 commit 4c8e5820|ffd3d49458ca98b1|deletion-without-evidence

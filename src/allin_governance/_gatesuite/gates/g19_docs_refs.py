@@ -396,7 +396,10 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(revision.lines))
         return revision.code
     missing_baseline = not baseline_path.is_file()
-    new = list(report.findings) if (args.no_baseline or missing_baseline) else baseline.filter_new(report.findings)
+    # strict=False：账本的缺陷（缺头 / 过期键）要**打印出来**再由本函数写进退出码；
+    # 抛异常会把已经攒好的报告行丢掉（其余 18 道门禁走默认的 strict=True，见 govlib）。
+    new = (list(report.findings) if (args.no_baseline or missing_baseline)
+           else baseline.filter_new(report.findings, strict=False))
     # 双向棘轮的另一半：查账。基线里当下已不再命中的键 = 过期账单，默认判红。
     # --no-baseline 是"当没有棘轮"，此刻查账没有意义（和无视基线自相矛盾）。
     ledger = None
@@ -410,13 +413,16 @@ def main(argv: list[str] | None = None) -> int:
                    exempted=report.exempted, skipped=report.skipped, notes=report.notes,
                    scanned=report.scanned)
     print(shown.render().splitlines()[0] if args.quiet else shown.render())
-    if ledger is not None and args.quiet and (ledger.stale or ledger.state == govlib.BASELINE_ABSENT):
-        # --quiet 只留首行；「棘轮失效」与「账本过期」都不能被折掉，补到 stderr。
+    if ledger is not None and args.quiet and (ledger.stale or ledger.state == govlib.BASELINE_ABSENT
+                                              or not ledger.ok):
+        # --quiet 只留首行；「棘轮失效」「账本过期」「基线头不完整」都不能被折掉，补到 stderr。
         for line in ledger.lines:
             print(f"  {line}", file=sys.stderr)
     code = report.exit_code(new)
-    if ledger is not None and ledger.stale and not args.pass_on_stale:
-        # 过期账单是不是"新问题"无关紧要：账本失真本身就是阻断项。
+    if ledger is not None and not ledger.ok:
+        # 账本失真本身就是阻断项：**过期键**与**新格式缺头**都与"有没有新问题"无关。
+        # 这里必须读 ledger.ok，而不是只看「有没有新问题」—— 否则一份没有签名的
+        # 基线会安静地继续抑制，红不红取决于运气。
         code = EXIT_BLOCKING
     return code
 

@@ -1,6 +1,7 @@
 {
   "version": 1,
   "comment": "Registry of the governance gates shipped by this distribution repository. The meta gate reads this file and refuses to pass when an entry is incomplete, when a gate cannot prove itself, or when a gate is missing from governance/RULES.md. Scope note (audit L-6): this 'registry' lists governance gates only and is unrelated to the same-named platform/packages/core/src/registry.js (build-time project/port table), platform/harness/registry.mjs (runtime component singleton), or kernel/registry.py (service short-name whitelist).",
+  "scope_comment": "每道门禁可选声明「扫描域」：scope 是 glob 数组、相对被判仓根、一律用 / 分隔；scope_exclude 可选，命中即不在域内。缺省（不写这两个键）= 未声明 = 不可判定，不是「全部」也不是「无」—— 检查器只能说「不知道」，不得替它猜。语义边界：scope 声明的是门禁**判定域的上界**（它有权判的文件），不是「每个域内文件都必然计入 scanned」—— g07 只判声明了事实源角色的 .md，内容不满足就合法地不计数。所以「新增文件而 scanned 不增」只有在「域内且该门禁的判据本来就会处理这类文件」时才算异常；能硬判的形态见 scripts/verify_gate_scope.py 的探针口径。形状由 g00-meta 校验（拒绝反斜杠/绝对路径/空数组/重复项/裸通配当默认值），语义由该脚本用真实文件实测。",
   "gates": [
     {
       "id": "g00-meta",
@@ -46,6 +47,23 @@
         "git"
       ],
       "baseline": "governance/baseline/g01-paths.txt",
+      "scope": [
+        "**/*"
+      ],
+      "scope_exclude": [
+        ".agents/notes/archived/**",
+        ".artifacts/**",
+        "apps/web/dist/**",
+        "audit-fragments/**",
+        "docs/记录/快照/**",
+        "coverage/**",
+        "dist/**",
+        "lib/**",
+        "node_modules/**",
+        "tmp/**",
+        "tools/tier_archive/**",
+        "vendor/**"
+      ],
       "selfcheck": true,
       "remediation": "先分「事实过期」还是「门禁没看见」：路径确已失效→改正文指向现行位置；属文档合法引用→按 classify 口径补豁免标记或落 exceptions.yml；勿为绿灯放宽门禁判定。"
     },
@@ -125,6 +143,11 @@
         "git"
       ],
       "baseline": "governance/baseline/g05-hygiene.txt",
+      "scope": [
+        "LICENSE",
+        "README.md",
+        ".gitignore"
+      ],
       "selfcheck": true,
       "remediation": "被跟踪的产物/字节码→git rm --cached + 补 .gitignore 覆盖面；缺根三件套→补 LICENSE/README/.gitignore；超限大文件→先对账必要性再移出索引；归档目录补 README/MANIFEST；**三层分域 C 层入索引**（boundary）→ 一律 `git rm --cached` 并确认 .gitignore 覆盖，因为这类产物删掉即重生；若它其实是事实源，正确动作是**挪到 B/B' 那一侧**（如机扫基线就该住 `facts/machine/<machine_id>/`），而不是留在产物目录里靠豁免过日子。"
     },
@@ -149,6 +172,15 @@
       ],
       "baseline": "governance/baseline/g06-numbering.txt",
       "selfcheck": true,
+      "empty_scope": {
+        "since": "2026-11-25",
+        "reason": "本仓与消费仓 allin 的 git 索引里两条判定面都是 0 对象：0 个 *.zh.md（无中英配对）、0 个 vN.*（无序号序列）。g06 因此如实记 SKIP（不是 pass），此处登记「为何 0 对象」并给出能被门禁每次重新取证的 witness。",
+        "witness": {
+          "bilingual_pair": ["*.zh.md"],
+          "ordinal_series": ["v[0-9]*"]
+        },
+        "invalidated_when": "witness 任一模式在图索引里命中 ≥1 个文件，而该判定面仍判 0 个对象 ⇒ 本登记自动失效，g06 判 scope-claim-expired（exit 1）。修法二选一：补齐对象让门禁真正判定，或删除本登记并重新判定「为什么还是 0 对象」。登记被删掉也不会恢复静音：判据另有内置 witness 兜底。"
+      },
       "remediation": "序号版本文件从最小号起补齐断档；中英配对文档按原文逐项对齐列表形状（列表数/编号标签/条目数），代码围栏内不计。"
     },
     {
@@ -214,6 +246,14 @@
         "git"
       ],
       "baseline": "governance/baseline/g09-python-hygiene.txt",
+      "scope": [
+        "**/*.py"
+      ],
+      "scope_exclude": [
+        ".agents/notes/archived/**",
+        "vendor/**",
+        "node_modules/**"
+      ],
       "selfcheck": true,
       "remediation": "文本 I/O（open/read_text/write_text）显式 encoding=；盘符路径改 raw 字符串或正斜杠（反斜杠+d / 反斜杠+a 这类转义伪影）；-W error::SyntaxWarning 编译红→修语法。存量冻结在 baseline 只拦新增，修新不修旧。"
     },
@@ -258,6 +298,14 @@
         "git"
       ],
       "baseline": "governance/baseline/g11-undef-names.txt",
+      "scope": [
+        "**/*.py"
+      ],
+      "scope_exclude": [
+        ".agents/notes/archived/**",
+        "vendor/**",
+        "node_modules/**"
+      ],
       "selfcheck": true,
       "remediation": "报「读了但全文件未定义」：补 import/定义或修正拼写；动态注入导致的误报→在门禁夹具/基线留档，勿裸豁免。"
     },
@@ -302,6 +350,9 @@
         "git"
       ],
       "baseline": "governance/baseline/g13-docs-only.txt",
+      "scope": [
+        "docs/**/*"
+      ],
       "selfcheck": true,
       "remediation": "docs/ 出现白名单外扩展名/脚本/二进制：移到正确落点（scripts/、tools/）；确属文档形态的例外→先论证再扩白名单；可执行位在 Windows 无意义，检出侧去掉该位。"
     },
@@ -325,6 +376,9 @@
         "git"
       ],
       "baseline": null,
+      "scope": [
+        "preset/allin/allin.patch.yml"
+      ],
       "selfcheck": true,
       "profileProbe": true,
       "remediation": "治理段漂移：先跑 preset/allin/refresh-gov-block.py --check 定位载体，canonical 改动需人工裁决后 --write 修复派生副本；profile 探针红→部署面载体缺失/悬空，先给载体再谈绿灯（勿放宽判定）。"
@@ -348,6 +402,16 @@
         "python>=3.9"
       ],
       "baseline": "governance/baseline/g15-docs-contract.txt",
+      "scope": [
+        "docs/**/*"
+      ],
+      "scope_exclude": [
+        "docs/spec/**",
+        "docs/facts/**",
+        "docs/records/**",
+        "docs/历史/**",
+        "docs/md/**"
+      ],
       "selfcheck": true,
       "remediation": "按 docs_index.py --list-all 的阻断码（D1–D7）逐条修：登记索引/补头部字段/修 ASCII 别名/补卷号覆盖区间。docs 缺 INDEX.md 时是 SKIP 不是通过——先建索引。"
     },
@@ -371,6 +435,11 @@
         "python>=3.9"
       ],
       "baseline": "governance/baseline/g16-skill-preset-parity.txt",
+      "scope": [
+        ".workbuddy/skills/allin-governance-agent/SKILL.md",
+        "preset/allin/allin.patch.yml",
+        "preset/allin/agent.cordis.yml"
+      ],
       "selfcheck": true,
       "remediation": "三载体（SKILL.md / allin.patch.yml / agent.cordis.yml）治理面必须同源：以 canonical 治理段为准改偏的那侧；核心事实（命令/路径）三侧同名出现；提到的门禁 id 必须在 registry.json 真实存在。"
     },
@@ -394,6 +463,9 @@
         "git"
       ],
       "baseline": "governance/baseline/g17-registry.txt",
+      "scope": [
+        "platform/registry/projects/*.yaml"
+      ],
       "selfcheck": true,
       "remediation": "发布区有仓未登记：补 registry.json 登记项（id 必须等于文件名）；确属豁免→registry-known-gaps.txt 写明理由声明（未登记又未声明即阻断）；生命周期标签只报告不阻断。"
     },
@@ -437,6 +509,18 @@
         "python>=3.9"
       ],
       "baseline": "governance/baseline/g19-docs-refs.txt",
+      "scope": [
+        "**/*.md"
+      ],
+      "scope_exclude": [
+        ".workbuddy/**",
+        "vendor/**",
+        "docs/md/**",
+        "docs/历史/**",
+        "docs/spec/**",
+        "docs/facts/**",
+        "docs/records/**"
+      ],
       "selfcheck": true,
       "remediation": "文档断言失败 = 命令/脚本/路径不存在：改正文指向现行位置；历史记录按「只增不改史实」补订正块；已废弃规范置头部状态「已废弃」整体免判；勿靠删断言灭红。"
     },
@@ -457,6 +541,10 @@
         "python>=3.9"
       ],
       "baseline": "governance/baseline/g20-facts.txt",
+      "scope": [
+        "docs/事实源/机器/*.md",
+        "docs/事实源/机器/*/*.md"
+      ],
       "selfcheck": true,
       "remediation": "实测后只改当前机器自己的分区文件（追加新时点块，历史时点块不判不改）；他机分区按铁律 6 留交接请求，不代改；计数口径按单位：项=全部条目，个仓/个目录=只数目录。"
     }

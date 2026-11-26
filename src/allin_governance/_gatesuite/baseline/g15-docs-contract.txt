@@ -1,1 +1,7 @@
+# format: 2
+# written: 2026-11-25T23:44:40Z
+# commit: 0e8270d1fadd9040c64da3674e770bef8f9eaec7
+# reason: 2.4.x 格式迁移，内容未变
+# body: <code>|<message> —— 本门禁自有键格式（docs_contract.Report），不是 govlib 的 finding key
+# 刷新前逐条复核：python governance/gates/<gate>.py --no-baseline --list-all
 # docs_index 基线（存量一次性固化；清完后应重写为空）

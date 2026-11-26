@@ -50,7 +50,7 @@ allin-governance --version
 allin-governance facts measure          # 换机第一件事：这台机器长什么样
 ```
 
-当前版本 `2.4.1`（以 [PyPI](https://pypi.org/project/allin-governance/) 为准）。
+当前版本 `2.4.2`（以 [PyPI](https://pypi.org/project/allin-governance/) 为准）。
 
 运行时零第三方依赖——治理工具要能在「一台什么都没装的机器」上跑起来。
 
