@@ -126,14 +126,28 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="registry -> facts.json.projects 索引投影")
     ap.add_argument("--data", type=Path, default=DEFAULT_DATA)
     ap.add_argument("--registry", type=Path, default=REGISTRY)
+    ap.add_argument("--root", type=Path, default=None,
+                    help="消费仓根（解析 source_file 用）。包形态下 ROOT 指向 site-packages；"
+                         "默认改为：cwd 含 platform/registry/projects 时用 cwd，否则回退 ROOT —— "
+                         "与 g00 untracked-support 同族的包形态路径问题（2026-11-25）。")
     ap.add_argument("--write", action="store_true", help="把索引投影写回 facts.json.projects")
     ap.add_argument("--check", action="store_true", help="仅校验同步，不写")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
+    root = a.root
+    if root is None:
+        cwd = Path.cwd()
+        root = cwd if (cwd / "platform" / "registry" / "projects").is_dir() else ROOT
+    # 默认 registry/data 同样跟随 root：包形态下 ROOT 指向 site-packages，
+    # 不发现消费仓会把投影写到 .venv 里（或 ENV ERROR）。
+    if a.registry == REGISTRY and (root / "platform" / "registry" / "projects").is_dir():
+        a.registry = root / "platform" / "registry" / "projects"
+    if a.data == DEFAULT_DATA and (root / "facts" / "facts.json").is_file():
+        a.data = root / "facts" / "facts.json"
     if a.check:
-        rc, msgs = check_sync(a.data, a.registry)
+        rc, msgs = check_sync(a.data, a.registry, root=root)
         for m in msgs:
             print(f"  {'SKIP' if m.startswith('SKIP') else 'BLOCK'} {m}")
         print(f"projects-sync: {'clean' if rc == EXIT_OK else 'blocking'} (exit={rc})")
