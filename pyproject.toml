@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allin-governance"
-version = "2.4.2"
+version = "2.5.0"
 description = "工作区治理中枢的公共核：可执行门禁 + 文档枢纽契约 + 仓库体检 + 机器事实采集"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,6 +36,9 @@ dependencies = []
 [project.optional-dependencies]
 ml = [
   "torch>=2.0",
+]
+pack = [
+  "pyinstaller>=6.0",
 ]
 full = [
   "license-expression>=30.0",
@@ -72,6 +75,7 @@ packages = [
   "allin_governance._gitee",
   "allin_governance._publish",
   "allin_governance._ml",
+  "allin_governance._pack",
   "allin_governance._toolkit",
   "allin_governance._toolkit.pytrunner",
   "allin_governance._github",

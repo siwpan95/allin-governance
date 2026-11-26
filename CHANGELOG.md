@@ -1,5 +1,37 @@
 # 变更记录
 
+## 2.5.0 —— 2026-11-26
+
+**两件事：扫盘补「区语义 + 未纳入清单 + 口径指纹」；`pyinstaller-tool` 仓并入为 `pack` 子命令。**
+
+### `scan`：三处不足按业界口径补齐
+
+2026-11-26 整盘实战（`scan --root G:/`）暴露的问题，逐条对照业界做法修：
+
+| 不足 | 修法 | 依据 |
+| --- | --- | --- |
+| 默认单层报「47 项 / 含 git 0」，而整盘实有 87 个 git 仓 —— 读数缺分母语义 | 读数行显式声明 `扫描范围：仅一级目录，未递归 —— 递归请加 --deep`；JSON 加 `scope.depth/note` | ADR-0011「没有分母的 scanned 不算量过」；业界「Record exclusions and revision IDs when saving metrics」 |
+| `archive/` 的有意归档备份被判「同远端仓多份检出」/「内容高度相似」，产生永久假告警 | 新增有序 `ZONE_RULES`（`release` / `archive` / `runtime` / `temp` / `system` / `other`，按路径组件、first-match-wins）；只有 `release`+`other` 参与重复判定 | kylin-x-kernel `code_stats.py` 的 ordered `path_rules`（规则对象参与回归测试） |
+| `c` vs `tmp` 79%、`nodejs` vs `nodejs_v22_backup` 50% 等非项目目录入相似度 | 同上：runtime/temp/system 区不参与判定；归档区「只报不警」并单独提示计数 | scc `--no-gen` 跳过非源文件；cloc `--exclude-dir` |
+| `found.000`~`found.014` 既不在项目数也不在任何一节，无法判断跳过还是漏掉 | 新增 `skipped` 清单**逐条带 reason**（`not-a-directory` / `hidden-directory` / `skip-dir` / `zone=...` / `shallow` / `no-project-signal`）；文本报告按 reason 汇总 | tokei / kylin `code_stats.py` 的 uncounted + reason 形态 |
+
+实测效果（同机同时段）：整盘深扫的可疑重复 **13 组 → 5 组**，且余下 5 组均为真重复
+（`dse-core` 同发布名、`art_video_gen` / `video-generator` / `an-engine` 内容相似、3 处 `MIGRATED.txt` 残留）。
+
+另加 `rules_digest`（规则表前 12 位摘要）：规则一改指纹就变，两次读数是否同口径可机读判断。
+回归用例 9 条见 `src/allin_governance/_toolkit/test_scan_repos.py`（含「归档区不报警」与「release 区真重复照报」双向断言）。
+
+### 新增 `pack` 子命令（`pyinstaller-tool` 仓并入）
+
+来源：`siwpan/pyinstaller`（PyPI `pyinstaller-tool` 1.0.0，MIT，2026-10-22）。用户定调
+「并入 allin-governance，删除其远端和本地仓，仅保留 PyPI」⇒ 能力重构为 CLI，原仓下线。
+
+- 子命令：`info`（环境探测）/ `build`（单脚本）/ `build-all`（批量）/ `selfcheck`（无依赖自检）。
+- GUI 自动检测**只看 import 行**：原 `全能宝.bat` 用 `findstr` 全文匹配，注释里提到 `tkinter` 会误判成 GUI（打出来没控制台、报错看不见）。回归用例正反例各二。
+- `pyinstaller` 是**可选依赖**（`pip install 'allin-governance[pack]'`）：不装也能 `info`/`selfcheck`，`build` 时返回退出码 3。
+- 不搬 Tkinter GUI（公共核是零三方依赖 CLI）。
+
+---
 ## 2.4.2 —— 2026-11-26
 
 **把"扫描域"和"抑制额度"变成可判的字段，并修一条把自然写法判红的窗口口径。**

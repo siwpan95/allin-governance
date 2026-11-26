@@ -473,6 +473,121 @@ def _cmd_ml(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_pack(argv: list[str]) -> int:
+    """PyInstaller 批量打包（能力由 `pyinstaller-tool` 仓并入，2026-11-26）。
+
+    子命令：info（环境探测）/ build（单脚本）/ build-all（批量）/ selfcheck（无依赖自检）
+    PyInstaller 为**可选依赖**：不装也能跑 info 与 selfcheck，build 时才报缺依赖。
+    GUI 自动检测只看 import 行（原 bat 全文 findstr 会把注释里提到 tkinter 的脚本误判成 GUI）。
+    """
+    import argparse as _ap
+
+    from allin_governance._pack import PYINSTALLER_AVAILABLE, UPX_AVAILABLE
+    from allin_governance._pack import builder as _b
+
+    ap = _ap.ArgumentParser(prog="allin-governance pack", description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("info", help="探测构建环境（python / pyinstaller / upx）")
+    sub.add_parser("selfcheck", help="无依赖自检：GUI 检测与命令拼装正反例")
+
+    p1 = sub.add_parser("build", help="打包单个 .py")
+    p1.add_argument("script")
+    p1.add_argument("--out", default="dist_all", help="产物目录（默认 dist_all）")
+    p1.add_argument("--onedir", action="store_true", help="目录式产物（默认单文件 -F）")
+    g = p1.add_mutually_exclusive_group()
+    g.add_argument("--windowed", action="store_true", help="强制窗口程序（-w）")
+    g.add_argument("--console", action="store_true", help="强制控制台（-c）")
+    p1.add_argument("--icon", default=None)
+    p1.add_argument("--add-data", action="append", default=[], help="附加数据，可多次")
+    p1.add_argument("--upx", action="store_true", help="UPX 压缩（需 upx 在 PATH）")
+    p1.add_argument("--name", default=None)
+    p1.add_argument("--dry-run", action="store_true", help="只回命令不执行")
+
+    p2 = sub.add_parser("build-all", help="批量打包目录下所有 .py")
+    p2.add_argument("--root", default=".", help="脚本目录（默认当前）")
+    p2.add_argument("--out", default="dist_all")
+    p2.add_argument("--onedir", action="store_true")
+    p2.add_argument("--upx", action="store_true")
+    p2.add_argument("--dry-run", action="store_true")
+
+    args = ap.parse_args(argv)
+
+    if args.cmd == "info":
+        import json as _json
+        print(_json.dumps(_b.probe_environment(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "selfcheck":
+        # 正例：import tkinter 必须判 GUI；反例：注释里提到 tkinter 必须判控制台。
+        import tempfile
+        from pathlib import Path as _P
+        cases = [
+            ("import tkinter\n", "tkinter", "正例 import tkinter"),
+            ("# 说明：本脚本不用 tkinter\nprint(1)\n", "", "反例 注释提及 tkinter"),
+            ("from PySide6.QtWidgets import QApplication\n", "PySide6", "正例 PySide6"),
+            ("import os\nprint(1)\n", "", "反例 纯控制台"),
+        ]
+        fails = 0
+        with tempfile.TemporaryDirectory() as td:
+            for src, want, label in cases:
+                f = _P(td) / "probe.py"
+                f.write_text(src, encoding="utf-8")
+                got = _b.detect_gui_kind(f)
+                ok = got == want
+                fails += 0 if ok else 1
+                print(f"  {'ok  ' if ok else 'FAIL'} {label}: got={got!r} want={want!r}")
+        # 命令拼装：-w / -c 必须随 windowed 走
+        with tempfile.TemporaryDirectory() as td:
+            f = _P(td) / "x.py"
+            f.write_text("print(1)\n", encoding="utf-8")
+            cmd_w = _b._build_command(f, onefile=True, windowed=True, icon=None,
+                                      add_data=[], upx=False, name=None, clean=True)
+            cmd_c = _b._build_command(f, onefile=True, windowed=False, icon=None,
+                                      add_data=[], upx=False, name=None, clean=True)
+            ok = ("-w" in cmd_w and "-w" not in cmd_c and "-c" in cmd_c)
+            fails += 0 if ok else 1
+            print(f"  {'ok  ' if ok else 'FAIL'} 命令拼装 -w/-c 随参数")
+        print(f"pack selfcheck: {'PASS' if not fails else f'{fails} FAILED'}"
+              f"（pyinstaller={PYINSTALLER_AVAILABLE} upx={UPX_AVAILABLE}）")
+        return 0 if not fails else 1
+
+    if args.cmd == "build":
+        # dry-run 只回命令、不执行 ⇒ 不需要 PyInstaller 在场（否则「先看要做什么」这个用途废掉）
+        if not PYINSTALLER_AVAILABLE and not args.dry_run:
+            print("PyInstaller 未安装：pip install pyinstaller", flush=True)
+            return 3
+        r = _b.build(
+            args.script, args.out,
+            onefile=not args.onedir,
+            windowed=True if args.windowed else (False if args.console else None),
+            icon=args.icon, add_data=args.add_data, upx=args.upx,
+            name=args.name, dry_run=args.dry_run,
+        )
+        print(f"script : {r['script']}")
+        print(f"gui    : {r.get('gui_kind') or '(控制台)'}")
+        print(f"cmd    : {' '.join(r['command'])}")
+        if r.get("artifact"):
+            print(f"产物   : {r['artifact']}")
+        if not r["ok"]:
+            print(f"失败   : {r.get('error', '')[:800]}")
+        return 0 if r["ok"] else 1
+
+    # build-all
+    if not PYINSTALLER_AVAILABLE and not args.dry_run:
+        print("PyInstaller 未安装：pip install pyinstaller", flush=True)
+        return 3
+    results = _b.build_all(args.root, args.out, onefile=not args.onedir,
+                           windowed=None, upx=args.upx, dry_run=args.dry_run)
+    ok = sum(1 for r in results if r["ok"])
+    print(f"批量：{len(results)} 个脚本，成功 {ok}，失败 {len(results) - ok}")
+    for r in results:
+        mark = "ok  " if r["ok"] else "FAIL"
+        print(f"  {mark} {r['script']}"
+              f"{' → ' + r['artifact'] if r.get('artifact') else ''}")
+    return 0 if ok == len(results) else 1
+
+
 #: 子命令表。新增能力只需在这里加一行，**不要**新开一个顶层入口点。
 SUBCOMMANDS: dict[str, tuple[str, object]] = {
     "repocheck": ("离线仓库体检：30 条规则，给出 0-10 健康分与 error/warn/info 三级问题", _cmd_repocheck),
@@ -488,6 +603,8 @@ SUBCOMMANDS: dict[str, tuple[str, object]] = {
                      _cmd_secrets_scan),
     "facts": ("机器事实：采集本机（盘/运行时/工具链）＋ 校验分区文件断言（measure / verify）",
               _cmd_facts),
+    "pack": ("PyInstaller 批量打包：GUI 自动检测 / 图标 / 附加数据 / UPX（pyinstaller 为可选依赖）",
+             _cmd_pack),
 }
 
 

@@ -79,6 +79,103 @@ TEXT_SUFFIXES = frozenset({
 #: 单个项目的指纹采样上限 —— 大仓只需代表性样本即可判断「是不是同一份」。
 MAX_FILES_FOR_FINGERPRINT = 400
 
+#: 扫描单元的「区」分类：**有序规则表，first-match-wins**（借鉴 kylin-x-kernel
+#: `code_stats.py` 的 ordered path_rules：规则对象本身参与回归测试，不靠散文约定）。
+#: 为什么需要：2026-11-26 整盘实战中 `archive/` 的**有意归档备份**被报成
+#: 「同远端仓多份检出」/「内容高度相似」—— 归档不是残留，是资产保全；把它和发布区
+#: 放在同一平面比较，会产生永久假告警，而永久告警等于没有告警。
+#: 匹配口径：按路径组件（component）比，不是子串 —— 与 ADR-0011「路径段不含」同款。
+ZONE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("release", ("repos",)),                                  # 发布区：正式检出
+    ("archive", ("archive", "__archive", "_archive",
+                 "backup", "_backup", "legacy", "_git_backup", "_safety_backup")),
+    ("runtime", ("nodejs", "nodejs_v22_backup", "python314", "python",
+                 "git", "cargo", "rustup", "go", "go_1270", "mingw64", "powershell",
+                 ".pnpm-store", "steamlibrary")),
+    ("temp", ("tmp", "temp", "logs", "_go_tmp", "work_area", "_8rsv60v_e2e_20261125")),
+    ("system", ("$recycle.bin", "system volume information", "config.msi",
+                "found.000", "found.001", "found.002", "found.003", "found.004",
+                "found.005", "found.006", "found.007", "found.008", "found.009",
+                "found.010", "found.011", "found.012", "found.013", "found.014")),
+)
+#: 系统修复碎片目录 `found.NNN` 是固定形态，上表穷举不完 ⇒ 再补一条前缀规则。
+ZONE_PREFIX_RULES: tuple[tuple[str, str], ...] = (
+    ("system", "found."),
+    ("system", "$recycle"),
+    ("temp", "_tmp_"),
+)
+
+#: 参与**重复判定**的区：只有发布区与未能分类的 other。
+#: 归档区（资产保全）、运行时区（nodejs/python 等）、临时区、系统碎片区都**不参与**
+#: —— 它们之间的「相似」不是重复，是同一类东西的正常形态（2026-11-26 整盘实战：
+#: `c` vs `tmp` 79%、`nodejs` vs `nodejs_v22_backup` 50%，全是噪声）。
+JUDGED_ZONES = frozenset({"release", "other"})
+
+#: 归档区单独提示「只报不警」——它不是残留，但值得让读者知道「这里有多份」。
+NON_ALERT_ZONES = frozenset({"archive"})
+
+#: 规则指纹：口径要能比对。同一事实两次统计若规则不同，数字不可比
+#: （借鉴业界「Record exclusions and revision IDs when saving metrics」）。
+def rules_digest() -> str:
+    """规则表的稳定摘要（前 12 位）。改规则即改指纹，便于判断两次读数是否同口径。"""
+    payload = repr(ZONE_RULES) + repr(ZONE_PREFIX_RULES) + repr(sorted(SKIP_DIRS))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def classify_zone(rel_parts: tuple[str, ...]) -> str:
+    """按路径组件判区。first-match-wins；未命中记 ``other``。
+
+    ``rel_parts`` 是**相对扫描根**的路径组件（小写比较）。
+    只看第一段与任一段的命中：`archive/xxx` 命中 archive；`repos/xxx` 命中 release。
+    """
+    for part in rel_parts:
+        low_exact = part.lower()
+        for zone, names in ZONE_RULES:
+            if low_exact in names:
+                return zone
+        for zone, prefix in ZONE_PREFIX_RULES:
+            if low_exact.startswith(prefix):
+                return zone
+    return "other"
+
+
+def collect_skipped(root: Path, infos: list[dict], deep: bool) -> list[dict]:
+    """列出**不参与重复判定**的条目并给原因。
+
+    语义统一为「skipped = 不参与判定的所有项」，覆盖两类：
+    a) 进了扫描单元但区属 runtime/temp/system 的（如 `found.000`、`nodejs`）；
+    b) 压根没进扫描单元的（非目录、隐藏、skip-dir、无项目信号）。
+
+    为什么必须有：2026-11-26 整盘实测里 `found.000`~`found.014` **既不在项目数里、
+    也不在任何一节**，从输出无法判断是「按规则跳过」还是「漏掉了」。
+    业界（tokei / kylin code_stats）都把 uncounted 与 reason 显式列出，本次照做。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for it in infos:
+        seen.add(str(Path(it["path"]).resolve()))
+        zone = it["zone"]
+        if zone not in JUDGED_ZONES and zone != "archive":
+            out.append({"path": it["label"], "reason": f"zone={zone}（不参与重复判定）"})
+    for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        key = str(entry.resolve())
+        if key in seen:
+            continue
+        if not entry.is_dir():
+            out.append({"path": entry.name, "reason": "not-a-directory"})
+            continue
+        if entry.name.startswith("."):
+            out.append({"path": entry.name, "reason": "hidden-directory"})
+            continue
+        if entry.name in SKIP_DIRS:
+            out.append({"path": entry.name, "reason": "skip-dir (build/venv/cache)"})
+            continue
+        if deep:
+            out.append({"path": entry.name, "reason": "no-project-signal (无 .git/打包清单)"})
+        else:
+            out.append({"path": entry.name, "reason": "shallow (未递归；用 --deep 展开)"})
+    return out
+
 #: 「这里的东西已经搬走了」的标记文件。2026-11-24 实测：`musickit/remix` 只剩
 #: `MIGRATED.txt` + 旧代码，而顶层 `remix` 才是现行项目 —— 这类残留不会被
 #: 「项目标识」判据抓到（它没有 .git/pyproject），但它恰恰是「多副本」的真身。
@@ -227,7 +324,7 @@ def iter_units(root: Path, deep: bool) -> list[tuple[str, Path]]:
     return units
 
 
-def describe(root: Path) -> dict:
+def describe(root: Path, label: str = "") -> dict:
     # 只认**自带** .git：合集的子目录没有自己的 .git，`git -C` 会向上找到父仓的，
     # 于是所有子项的 remote 都变成合集仓名 —— 那会把「合集 + 子项」全判成
     # 「同远端仓多份检出」。2026-11-24 实测：dev-toolkit 的 3 个子项全被误报。
@@ -235,6 +332,7 @@ def describe(root: Path) -> dict:
     remote = remote_repo_name(root) if is_git else ""
     name, name_src = declared_name(root)
     fp, nfiles = content_fingerprint(root)
+    rel_parts = tuple((label or root.name).split("/"))
     return {
         "dir": root.name,
         "path": str(root),
@@ -246,6 +344,7 @@ def describe(root: Path) -> dict:
         "commits": _git(root, "rev-list", "--count", "HEAD") if is_git else "",
         "files": nfiles,
         "marker": migration_marker(root),
+        "zone": classify_zone(rel_parts),
         "fp": fp,
     }
 
@@ -285,16 +384,22 @@ def main(argv: list[str] | None = None) -> int:
     units = iter_units(root, args.deep)
     infos = []
     for label, path in units:
-        info = describe(path)
+        info = describe(path, label)
         info["label"] = label
         info["top"] = label.split("/", 1)[0]
         info["is_child"] = "/" in label
         infos.append(info)
 
+    # 只判 release / other 两类区；归档/运行时/临时/系统区不参与，避免永久假告警。
+    judged = [it for it in infos if it["zone"] in JUDGED_ZONES]
+    non_alert = [it for it in infos if it["zone"] == "archive"]
+    out_of_scope = [it for it in infos if it["zone"] not in JUDGED_ZONES and it["zone"] != "archive"]
+    skipped = collect_skipped(root, infos, args.deep)
+
     # ---- 重复判定：三条独立判据，任一命中即列入（不合并成「综合分」）----
     by_remote: dict[str, list[dict]] = defaultdict(list)
     by_name: dict[str, list[dict]] = defaultdict(list)
-    for it in infos:
+    for it in judged:
         if it["remote"]:
             by_remote[it["remote"].lower()].append(it)
         if it["name"]:
@@ -312,9 +417,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # 内容相似：只在「文件数相近」的对之间比，避免 O(n²) 全量算
     pairs = []
-    for i in range(len(infos)):
-        for j in range(i + 1, len(infos)):
-            a, b = infos[i], infos[j]
+    for i in range(len(judged)):
+        for j in range(i + 1, len(judged)):
+            a, b = judged[i], judged[j]
             # 包含关系不是重复：合集的整体必然与其子项高度相似
             pa, pb = str(a["path"]), str(b["path"])
             if pa.startswith(pb + os.sep) or pb.startswith(pa + os.sep):
@@ -331,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- 同名项目跨合集 / 合集内多副本 ----
     by_leaf: dict[str, list[dict]] = defaultdict(list)
-    for it in infos:
+    for it in judged:
         by_leaf[it["label"].split("/")[-1].lower()].append(it)
     for key, group in sorted(by_leaf.items()):
         if len(group) > 1:
@@ -341,23 +446,58 @@ def main(argv: list[str] | None = None) -> int:
                              "holders": [g["label"] for g in group]})
 
     # ---- 迁移残留：有 MIGRATED/ARCHIVED 标记的目录，多半是「搬走没删」----
-    residues = [it for it in infos if it.get("marker")]
+    residues = [it for it in judged if it.get("marker")]
     if residues:
         findings.append({"kind": "疑似迁移残留（带搬走标记）", "key": str(len(residues)),
                          "holders": [f"{it['label']} [{it['marker']}]" for it in residues]})
 
+    zones: dict[str, int] = defaultdict(int)
+    for it in infos:
+        zones[it["zone"]] += 1
+
     if args.json:
         print(json.dumps({
             "root": str(root),
+            #: 口径三件套：范围、规则指纹、时点。缺任一项，两次读数不可比
+            #: （业界：Record exclusions and revision IDs when saving metrics）。
+            "scope": {
+                "depth": "deep" if args.deep else "shallow",
+                "note": "shallow=仅一级目录，未递归；递归请 --deep" if not args.deep
+                        else "deep=一级 + 合集内像项目的子目录",
+                "sim": args.sim,
+            },
+            "rules_digest": rules_digest(),
             "projects": len(infos),
+            "projects_judged": len(judged),
+            "projects_non_alert": len(non_alert),
+            "projects_out_of_scope": len(out_of_scope),
+            "zones": dict(sorted(zones.items())),
+            "skipped": skipped,
             "findings": findings,
             "details": [{k: v for k, v in it.items() if k != "fp"} for it in infos],
         }, ensure_ascii=False, indent=2))
         return 1 if findings else 0
 
+    scope = ("仅一级目录，未递归 —— 递归请加 --deep" if not args.deep
+             else "一级 + 合集内像项目的子目录")
     print(f"发布区：{root}")
+    print(f"扫描范围：{scope}")
     print(f"项目数：{len(infos)}　（含 git {sum(1 for i in infos if i['is_git'])}，"
-          f"浅克隆 {sum(1 for i in infos if i['is_shallow'])}）")
+          f"浅克隆 {sum(1 for i in infos if i['is_shallow'])}；"
+          f"规则指纹 {rules_digest()}）")
+    if zones:
+        print("分区：" + " · ".join(f"{k} {v}" for k, v in sorted(zones.items())))
+    if skipped:
+        reasons: dict[str, int] = defaultdict(int)
+        for s in skipped:
+            reasons[s["reason"]] += 1
+        print(f"未纳入扫描 {len(skipped)} 项：" +
+              " · ".join(f"{r} {n}" for r, n in sorted(reasons.items(), key=lambda kv: -kv[1])))
+    if non_alert:
+        print(f"归档区 {len(non_alert)} 项**只报不警**（资产保全，不算迁移残留）")
+    if out_of_scope:
+        print(f"运行时/临时/系统区 {len(out_of_scope)} 项不参与重复判定（非项目形态）")
+    print(f"参与判定：{len(judged)} 项（release + other）")
     if not args.dup_only:
         print(f"\n未取到发布名的项目 {sum(1 for i in infos if not i['name'])} 个"
               f"（非打包项目属正常）；未取到 remote 的 {sum(1 for i in infos if not i['remote'])} 个")

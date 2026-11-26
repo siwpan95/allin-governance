@@ -29,6 +29,8 @@
 | `publish` | **PyPI 发版链路**：`check` / `build` / `verify` / `upload` / `release` |
 | `secrets-scan` | 离线凭据扫描（21 规则 + 熵闸，零外部二进制） |
 | `facts` | 机器事实：采集本机 + 校验分区文件断言（**支持无仓模式**） |
+| `ml` | 文本分类骨架：TextCNN 打底 + 规则降级（`torch` 可选） |
+| `pack` | PyInstaller 批量打包：GUI 自动检测 / 图标 / 附加数据 / UPX（`pyinstaller` 可选，`pip install 'allin-governance[pack]'`） |
 
 所有子命令接受 `--root <目录>` 与位置参数两种写法（1.1.2 起统一）。
 
