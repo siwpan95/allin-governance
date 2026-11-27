@@ -19,15 +19,15 @@
 
 ```bash
 # 只采集，不做判断 —— 输出可直接贴入分区文件（`机器/<机器名>.md` 或 `机器/<机器名>/<机器名>.md`）
-python tools/facts/measure.py
-python tools/facts/measure.py --out /tmp/facts.md
+allin-governance facts measure
+allin-governance facts measure --out /tmp/facts.md
 
 # 只判定 —— 解析头部「日期最新的时点块」，校验 PATH-EXISTS 与 COUNT
-python tools/facts/verify_facts.py                 # 默认只验**当前机器**那份（与 g20 同口径）
-python tools/facts/verify_facts.py --all           # 显式校验全部机器文件（跨机诊断）
-python tools/facts/verify_facts.py --file <某份.md>   # 单文件校验
-python tools/facts/verify_facts.py --json
-python tools/facts/verify_facts.py --selftest         # 造必错样本，证明它真能报
+allin-governance facts verify_facts                 # 默认只验**当前机器**那份（与 g20 同口径）
+allin-governance facts verify_facts --all           # 显式校验全部机器文件（跨机诊断）
+allin-governance facts verify_facts --file <某份.md>   # 单文件校验
+allin-governance facts verify_facts --json
+allin-governance facts verify_facts --selftest         # 造必错样本，证明它真能报
 ```
 
 | 脚本 | 退出码 |
@@ -72,7 +72,7 @@ python tools/facts/verify_facts.py --selftest         # 造必错样本，证明
 
 ## 新增一台机器
 
-1. 在该机跑 `python tools/facts/measure.py --out <临时文件>`
+1. 在该机跑 `allin-governance facts measure --out <临时文件>`
 2. **人工裁决**：与上一版逐项比对；不符的先复测再改，**旧值以「（原 …）」保留在同一格**
 3. 新建 `docs/事实源/机器/<机器名>/<机器名>.md`（**一机一目录**；过渡期允许顶层单文件，两种形态 g20 均兼容），并在 `机器分区索引.md` §1 登记
 4. 跑 `verify_facts.py`，应得 `findings 0`
@@ -118,9 +118,9 @@ python tools/facts/verify_facts.py --selftest         # 造必错样本，证明
 
 ```bash
 # ① 采集本机事实（输出可直接贴进分区文件：`机器/<机器名>.md` 或 `机器/<机器名>/<机器名>.md`）
-python tools/facts/measure.py
+allin-governance facts measure
 # ② 判定本机分区文件：0 = 干净，1 = 有 finding
-python tools/facts/verify_facts.py
+allin-governance facts verify_facts
 ```
 
 ⚠ 本工具是 **Windows 专属**（判据基于盘符绝对路径，`platforms: ["nt"]`），非 Windows 直接 `ENV ERROR` 退出 3。

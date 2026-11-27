@@ -9,15 +9,17 @@
 
 ```powershell
 npm run check                        # 一条命令：治理门禁 + 文档契约 + .ps1 编码
-npm run check:governance            # 全部门禁，仓内判据（聚合默认带 --no-profile，不读 host profile）
-npm run check:governance:selfcheck  # 证明每个门禁仍能抓到注入的缺陷
-node tools/gate/governance/run.ts --list            # 列出 id / 档位 / 覆盖的规则
-node tools/gate/governance/run.ts --only g01-paths # 只跑某几条（逗号分隔）
-node tools/gate/governance/run.ts --no-profile     # 显式声明「只看仓内」（聚合默认已带）
-node tools/gate/governance/run.ts -- --quiet       # `--` 之后的参数透传给每个门禁
-python tools/gate/governance/gates/g01_paths.py --selfcheck       # 单条门禁自检（不经 Node）
-python tools/gate/governance/gates/g01_paths.py --no-baseline --list-all  # 看全量存量，忽略基线
-python tools/gate/governance/gates/g14_preset.py                  # 单跑：含 profile 探针（读 preset 安装点）
+# 以下命令针对**消费仓**布局（由 `init` 铺出 <仓根>/tools/gate/...），本仓没有那些文件。
+# gov-cmd: allow 是给命令判据的行内标注：这条命令不是本仓的失效引用，是另一套布局的示例。
+npm run check:governance            # gov-cmd: allow 全部门禁，仓内判据
+npm run check:governance:selfcheck  # gov-cmd: allow 证明每个门禁仍能抓到注入的缺陷
+node tools/gate/governance/run.ts --list            # gov-cmd: allow 列出 id / 档位 / 覆盖的规则
+node tools/gate/governance/run.ts --only g01-paths # gov-cmd: allow 只跑某几条
+node tools/gate/governance/run.ts --no-profile     # gov-cmd: allow 只看仓内
+node tools/gate/governance/run.ts -- --quiet       # gov-cmd: allow 透传参数
+python -m allin_governance._gatesuite.gates.g01_paths --selfcheck       # 单条门禁自检（不经 Node）
+python -m allin_governance._gatesuite.gates.g01_paths --no-baseline --list-all  # 看全量存量，忽略基线
+python -m allin_governance._gatesuite.gates.g14_preset                  # 单跑：含 profile 探针（读 preset 安装点）
 ```
 
 **仓内 vs 仓外的边界（重要）**：`check:governance` 是**仓内**判据 —— 它带 `--no-profile`，只转发给
@@ -61,9 +63,9 @@ Python 解释器按 `DSH_GOVERNANCE_PYTHON` → `python3` → `python` → `py -
 存量没清完就上线的门禁，通常的结局是被绕过。因此每条门禁都支持基线：存量一次性写进 `baseline/<gate>.txt`，此后**只拦新增**。
 
 ```powershell
-python tools/gate/governance/gates/g01_paths.py --no-baseline --list-all   # 先看全量
-python tools/gate/governance/gates/g01_paths.py --write-baseline           # 再冻结存量
-git diff tools/gate/governance/baseline/                                    # 基线变化必须可评审
+python -m allin_governance._gatesuite.gates.g01_paths --no-baseline --list-all   # 先看全量
+python -m allin_governance._gatesuite.gates.g01_paths --write-baseline           # 再冻结存量
+git diff src/allin_governance/_gatesuite/baseline/                                    # 基线变化必须可评审
 ```
 
 **纪律**：刷新基线前必须先看全量；基线文件随仓提交（收紧与放宽都要在提交信息里写明理由）；`g01-paths` 的基线当前**为空**，即存量已清零。
