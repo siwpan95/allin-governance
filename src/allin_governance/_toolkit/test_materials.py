@@ -28,6 +28,9 @@ def test_build_materials(tmp_path):
     # 物料号去 .md；digest 是内容判据
     assert rows["docs/规范/SPEC-001.md"]["id"] == "docs/规范/SPEC-001"
     assert len(rows["docs/规范/SPEC-001.md"]["digest"]) == 12
+    # revision = 生效区间标识；未撤回的文档 effective_to 为空
+    assert rows["docs/规范/SPEC-001.md"]["revision"] == rows["docs/规范/SPEC-001.md"]["digest"]
+    assert rows["docs/规范/SPEC-001.md"]["effective_to"] is None
 
 
 def test_digest_changes_with_content(tmp_path):

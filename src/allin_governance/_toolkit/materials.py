@@ -89,6 +89,11 @@ def build(root: Path) -> dict:
             "id": rel[:-3] if rel.endswith(".md") else rel,     # 去掉 .md，物料号稳定
             "path": rel,
             "title": _title(text),
+            # revision = 版本的生效区间标识（Effectivity），不是「批次」本体。
+            # 同一 digest 只读；内容变了就是新 revision（effective_from 从本次采集起）
+            "revision": hashlib.sha256(text.encode("utf-8")).hexdigest()[:12],
+            "effective_from": _updated(root, rel),
+            "effective_to": None,
             "digest": hashlib.sha256(text.encode("utf-8")).hexdigest()[:12],
             "lines": text.count("\n") + (1 if text and not text.endswith("\n") else 0),
             "updated_at": _updated(root, rel),
