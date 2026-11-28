@@ -72,7 +72,8 @@ def check(root: Path) -> dict:
     """只读体检。返回 {venv, issues:[{code,detail}], interpreter, pip, home}。"""
     venv = find_venv(root)
     if venv is None:
-        return {"venv": None, "issues": [{"code": "no-venv", "detail": f"{root} 下没有 .venv/venv/env"}]}
+        return {"venv": None, "notes": [],
+                "issues": [{"code": "no-venv", "detail": f"{root} 下没有 .venv/venv/env"}]}
     py = _python(venv)
     issues: list[dict] = []
 
@@ -99,17 +100,23 @@ def check(root: Path) -> dict:
     rc_smoke, smoke = _run(py, ["-c", "import ssl, sqlite3, ctypes; print('ok')"], 60)
     if rc_smoke != 0:
         issues.append({"code": "import-smoke-failed", "detail": smoke.strip()[:200]})
+    notes: list[dict] = []
     if home:
         drift = classify_home(home, version)
-        if drift:
+        if drift == "drift-abi":
             issues.append({"code": drift, "detail": f"home={home} interpreter={version or '-'}"})
+        elif drift == "drift-name-only":
+            # 同名小版本差（3.13.12 vs 3.13.14）不致命：只提示，不阻断
+            # （调研：判据从「路径存在」升级为「版本一致」，但一致性分两档）
+            notes.append({"code": drift, "detail": f"home={home} interpreter={version or '-'}"})
 
     rc, out = _run(py, ["-m", "pip", "--version"], 60)
     pip = out.strip().splitlines()[0] if rc == 0 and out.strip() else ""
     if rc != 0:
         issues.append({"code": "pip-broken", "detail": out.strip()[:200]})
 
-    return {"venv": str(venv), "interpreter": version, "pip": pip, "home": home, "issues": issues}
+    return {"venv": str(venv), "interpreter": version, "pip": pip, "home": home,
+            "issues": issues, "notes": notes}
 
 
 def repair(root: Path) -> dict:
@@ -207,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  home: {state['home'] or '-'}")
                 for i in state["issues"]:
                     print(f"  ISSUE [{i['code']}] {i['detail']}")
+                for n in state.get("notes", []):
+                    print(f"  NOTE  [{n['code']}] {n['detail']}")
         return 0 if not state["issues"] else 1
 
     if args.action == "repair":
