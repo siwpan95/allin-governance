@@ -192,3 +192,19 @@ if __name__ == "__main__":
     print("—" * 40)
     print(f"selfcheck: {'PASS' if not fails else f'{fails} FAILED'}")
     sys.exit(1 if fails else 0)
+
+
+def test_catalog_contract(tmp_path):
+    """scan --catalog 的消费契约：机器字段齐全、人属字段一个都不许混进来。"""
+    from .scan_repos import CATALOG_SCHEMA, _launch_probe, build_catalog
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo" / "main.py").write_text("print(1)\n", encoding="utf-8")
+    cat = build_catalog(tmp_path)
+    assert cat["schema"] == CATALOG_SCHEMA
+    assert cat["discovered"] == len(cat["rows"])
+    row = cat["rows"][0]
+    for key in ("id", "path", "checkout", "launch", "publish"):
+        assert key in row, key
+    for key in ("name", "category", "note", "verify", "manual"):
+        assert key not in row, f"人工字段混入机器观测态：{key}"
+    assert row["launch"]["command"] == "python main.py"

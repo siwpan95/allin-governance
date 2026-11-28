@@ -355,6 +355,80 @@ def jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     return len(a & b) / len(a | b)
 
 
+
+# ---------------------------------------------------------------------------
+# 发现目录（--catalog）：公共核替消费仓解决「发布区里有哪些项目、怎么启动、远端是谁」。
+#
+# 分工：本模块只产出**机器可判**的观测字段；人工语义（name/category/note/verify）
+# 绝不出现在这里——那是消费仓的 registry/projects/ 该管的事。
+# 产物是 stdout 的 JSON（可用 --out 落盘），消费方自行决定写不写、写到哪。
+# ---------------------------------------------------------------------------
+import datetime as _dt
+import socket as _socket
+
+CATALOG_SCHEMA = "allin-governance/discovery-catalog/v1"
+
+
+def _git_info(path: Path) -> tuple[str, str]:
+    """git remote / 当前分支；失败返回空串，不猜、不伪造。"""
+    repo, branch = "", ""
+    try:
+        url = subprocess.run(["git", "-C", str(path), "remote", "get-url", "origin"],
+                             capture_output=True, text=True, timeout=8).stdout.strip()
+        m = re.search(r"(?:gitee\.com|github\.com)[/:]([^/]+)/([^/]+?)(?:\.git)?$", url, re.I)
+        if m:
+            repo = f"{m.group(1)}/{m.group(2)}"
+        branch = subprocess.run(["git", "-C", str(path), "symbolic-ref", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=8).stdout.strip()
+    except Exception:                                   # noqa: BLE001
+        pass
+    return repo, branch
+
+
+def _launch_probe(path: Path) -> dict | None:
+    """按仓库内真实入口探测启动命令；只有依据明确才给，探测不到返回 None。"""
+    for name, cmd in (("main.py", "python main.py"), ("app.py", "python app.py"),
+                      ("index.js", "node index.js"), ("run.bat", "run.bat")):
+        if (path / name).is_file():
+            return {"command": cmd, "basis": name}
+    pkg = path / "package.json"
+    if pkg.is_file():
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+            if (data.get("scripts") or {}).get("start"):
+                return {"command": "npm start", "basis": "package.json scripts.start"}
+        except Exception:                               # noqa: BLE001
+            pass
+    return None
+
+
+def build_catalog(root: Path, *, deep: bool = False) -> dict:
+    """发布区 → 发现目录。只含机器字段 + 探针，不含任何人工语义。"""
+    units = iter_units(root, deep)
+    rows = []
+    for label, path in units:
+        repo, branch = _git_info(path)
+        probe = _launch_probe(path)
+        rows.append({
+            "id": label.split("/", 1)[0],
+            "path": f"repos/{label}",
+            "checkout": "local",
+            "launch": probe,
+            "publish": {"repo": repo, "branch": branch},
+            "machine_fields": ["id", "path", "checkout", "publish.repo", "publish.branch"],
+            "human_fields": ["name", "category", "version", "manual", "note", "verify"],
+        })
+    return {
+        "schema": CATALOG_SCHEMA,
+        "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        "root": str(root),
+        "hostname": _socket.gethostname().lower(),
+        "discovered": len(rows),
+        "probe_unavailable": sum(1 for r in rows if not r["launch"]),
+        "rows": rows,
+        "_note": "机器观测态，可覆盖；人工语义由消费仓 registry/projects/ 持有，本产物不含。",
+    }
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="发布区扫盘：项目指纹与重复检出")
     ap.add_argument("--root", default=None, help="发布区根（默认 <仓根>/../repos 或 ALLIN_REPOS_ROOT）")
@@ -363,6 +437,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--deep", action="store_true",
                     help="展开合集内部子项目（找「同一项目出现在多个合集」必用）")
     ap.add_argument("--sim", type=float, default=0.5, help="内容相似度阈值（默认 0.50）")
+    ap.add_argument("--catalog", action="store_true",
+                    help="输出发现目录 JSON（机器字段 + 探针；消费仓据此写观测态）")
+    ap.add_argument("--out", type=Path, default=None, help="--catalog 的落盘路径（不传则 stdout）")
     args = ap.parse_args(argv)
 
     here = Path(__file__).resolve().parent
@@ -380,6 +457,17 @@ def main(argv: list[str] | None = None) -> int:
     if not root.is_dir():
         print(f"[ERR] 发布区不存在: {root}", file=sys.stderr)
         return 3
+
+    if args.catalog:
+        catalog = build_catalog(root, deep=args.deep)
+        text = json.dumps(catalog, ensure_ascii=False, indent=2) + chr(10)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(text, encoding="utf-8")
+            print(f"catalog -> {args.out}（{catalog['discovered']} 项，探针不可用 {catalog['probe_unavailable']}）")
+        else:
+            print(text, end="")
+        return 0
 
     units = iter_units(root, args.deep)
     infos = []

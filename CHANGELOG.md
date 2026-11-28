@@ -1,5 +1,27 @@
 # 变更记录
 
+## 2.5.2 —— 2026-11-28
+
+### 从「只报告」到「解决需求」：`scan --catalog`
+三仓分工定案：allin 是消费方（需求：发布区有哪些仓、怎么启动、远端是谁），
+本仓解决需求，govrule 负责审批与交付。
+
+`scan` 此前只报项目数与重复检出，消费方无法据此登记。新增：
+
+```
+allin-governance scan --catalog --root G:/repos [--out catalog.json]
+```
+
+产出 `allin-governance/discovery-catalog/v1`：每仓的 id/path/checkout/launch（探针）
+/publish.repo+branch，以及 schema/generated_at/hostname/discovered/probe_unavailable。
+**只含机器可判字段**，人工语义（name/category/note/verify…）绝不出现——
+那是消费仓 `registry/projects/` 的职责。
+
+实测：78 仓，探针可用 26、不可用 52（不伪造，交人工）。
+
+契约测试 `test_catalog_contract` 守两条：机器字段齐全、人属字段零混入。
+消费方（allin）侧另做 schema/discovered 一致性校验，provider 升级不能静默降级。
+
 ## 2.5.1 —— 2026-11-28
 
 ### `facts verify` 崩了：`current_machine` 搬家后调用点没跟上
