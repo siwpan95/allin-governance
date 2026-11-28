@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.all:
             files, skipped = candidates, []
         else:
-            me = gate.current_machine()
+            me = gate.govlib.current_machine()
             files = [p for p in candidates if p.stem.lower() == me]
             skipped = [p.name for p in candidates if p.stem.lower() != me]
             if not files:
@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
 
     all_findings: list[dict] = []
     freshness: dict[str, str] = {}
-    me = gate.current_machine()
+    me = gate.govlib.current_machine()
     for path in files:
         text = path.read_text(encoding="utf-8", errors="replace")
         # ``owner`` scopes the self-identity criterion's ownership half to the
@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         for name, note in freshness.items():
             print(f"[{name}] {note}")
         for name in skipped:
-            print(f"[skip] {name}: 非当前机器（{gate.current_machine()}）的分区文件，留待该机自验"
+            print(f"[skip] {name}: 非当前机器（{gate.govlib.current_machine()}）的分区文件，留待该机自验"
                   f"（--all 可显式跨机诊断）")
         print(f"scanned {len(files)} file(s); findings {len(all_findings)}")
         for finding in all_findings:

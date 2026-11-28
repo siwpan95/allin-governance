@@ -1,5 +1,19 @@
 # 变更记录
 
+## 2.5.1 —— 2026-11-28
+
+### `facts verify` 崩了：`current_machine` 搬家后调用点没跟上
+`current_machine()` 已提到 `_gatesuite/runtime/govlib.py`（g19 也要用，一份实现一处维护），
+但 `_facts/verify_facts.py` 三处仍调用 `gate.current_machine()` ——
+`g20_facts` 模块里已经没有这个名字，于是 `AttributeError` 直接崩。
+
+实测：`allin-governance facts verify --root .` → `AttributeError: module ... has no attribute 'current_machine'`
+修复：三处改 `gate.govlib.current_machine()`；修后 `scanned 1 file(s); findings 0`。
+
+### 为什么现在才发现
+这条命令不在 20 道门禁里，也不在 pre-commit 里——**只有完整跑一遍全流程才会碰到**。
+同类的还有：`scan`、`verify`、`pack`。判据覆盖不到的地方，只能靠「按新人的路线走一遍」。
+
 ## 2.5.0 —— 2026-11-26
 
 **两件事：扫盘补「区语义 + 未纳入清单 + 口径指纹」；`pyinstaller-tool` 仓并入为 `pack` 子命令。**
