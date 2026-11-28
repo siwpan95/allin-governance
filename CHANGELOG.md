@@ -1,5 +1,28 @@
 # 变更记录
 
+## 2.5.7 —— 2026-11-28
+
+### 知识库物料主数据：文档即物料（用户纠正）
+上一轮把「物料」理解成源码与依赖，得出「BOM/库存没有对应物」的结论。用户纠正：
+**知识库对应的就是工单/生产订单/物料**。这个纠正成立——文档有 id、有修订、有负责人、
+有状态，正是 material master 回答的四问。
+
+新增 `materials build|list`：
+
+```
+allin-governance materials build --root <allin>   # → facts/materials.json
+```
+
+每条：`id`（去 .md 的稳定物料号）、`path`、`title`（首个一级标题，没有就空着不猜）、
+`digest`（内容 sha256 前 12 位——**修订判据，不是时间戳**）、`lines`、
+`updated_at`（git 最后提交日）、`status`（在 docs/INDEX.md 里即 registered）、`links_out`。
+
+**不建数量/批次/库位**：文档没有这些语义，造了就是空对象（测试里有一条守着）。
+
+实测 allin：728 篇文档、已登记 134——**这个比例本身就是「知识库有多少没进索引」的答案**。
+
+3 条测试。
+
 ## 2.5.6 —— 2026-11-28
 
 ### `upgrade-in-place` + `--base`：把「修」和「重建」之间的那条路补上

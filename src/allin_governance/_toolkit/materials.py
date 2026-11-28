@@ -1,0 +1,145 @@
+"""知识库物料主数据（material master for docs）。
+
+ERP 的物料主数据回答「这是什么、哪一版、谁负责、现在什么状态」。
+知识库里的文档同样有这四问——只是没有数量、没有库存地点。本模块**只建可判真的字段**，
+不造数量/批次/库位这类在文档上没有对应物的列（造了就是空对象）。
+
+字段：
+  id          物料号（docs 相对路径的稳定形式）
+  path        仓内路径
+  title       首个一级标题（没有则空，不猜）
+  digest      内容 sha256 前 12 位——**修订的判据**，不是时间戳
+  lines       行数
+  updated_at  git 最后提交日期（不在 git 里则空）
+  status      registered（在 docs/INDEX.md 里）/ unregistered
+  links_out   指向仓内的相对链接数
+
+产物只写到一个 JSON；索引/门禁怎么用它由消费方决定。
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+SCHEMA = "allin-governance/materials/v1"
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "dist", "build"}
+LINK_RX = re.compile(r"\]\(([^)]+)\)")
+
+
+def _title(text: str) -> str:
+    for line in text.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return ""
+
+
+def _updated(root: Path, rel: str) -> str:
+    try:
+        out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%as", "--", rel],
+                             capture_output=True, text=True, timeout=8).stdout.strip()
+        return out
+    except Exception:                                   # noqa: BLE001
+        return ""
+
+
+def _indexed_paths(root: Path) -> set[str]:
+    """docs/INDEX.md 里出现过的仓内路径（宽松匹配：只要路径存在就算已登记）。"""
+    idx = root / "docs" / "INDEX.md"
+    if not idx.is_file():
+        return set()
+    text = idx.read_text(encoding="utf-8", errors="replace")
+    found = set()
+    for m in LINK_RX.finditer(text):
+        target = m.group(1).split("#", 1)[0].strip()
+        if not target or target.startswith(("http://", "https://", "mailto:")):
+            continue
+        p = (idx.parent / target).resolve()
+        try:
+            found.add(str(p.relative_to(root.resolve())).replace("\\", "/"))
+        except ValueError:
+            continue
+    return found
+
+
+def build(root: Path) -> dict:
+    root = Path(root).resolve()
+    docs = root / "docs"
+    if not docs.is_dir():
+        raise FileNotFoundError(f"{docs} 不存在——物料主数据只对知识库（docs/）建")
+    registered = _indexed_paths(root)
+    rows = []
+    for p in sorted(docs.rglob("*.md")):
+        rel = str(p.relative_to(root)).replace("\\", "/")
+        if any(part in SKIP_DIRS for part in p.parts):
+            continue
+        text = p.read_text(encoding="utf-8", errors="replace")
+        links = 0
+        for m in LINK_RX.finditer(text):
+            t = m.group(1).split("#", 1)[0].strip()
+            if t and not t.startswith(("http://", "https://", "mailto:")):
+                links += 1
+        rows.append({
+            "id": rel[:-3] if rel.endswith(".md") else rel,     # 去掉 .md，物料号稳定
+            "path": rel,
+            "title": _title(text),
+            "digest": hashlib.sha256(text.encode("utf-8")).hexdigest()[:12],
+            "lines": text.count("\n") + (1 if text and not text.endswith("\n") else 0),
+            "updated_at": _updated(root, rel),
+            "status": "registered" if rel in registered else "unregistered",
+            "links_out": links,
+        })
+    return {
+        "schema": SCHEMA,
+        "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        "root": str(root),
+        "count": len(rows),
+        "registered": sum(1 for r in rows if r["status"] == "registered"),
+        "_note": "文档物料主数据：只含可判真字段；不含数量/批次/库位（文档没有这些语义）。",
+        "rows": rows,
+    }
+
+
+def write(root: Path, out: Path) -> dict:
+    data = build(root)
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, out)
+    return data
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="materials", description="知识库物料主数据（docs → 物料记录）")
+    ap.add_argument("action", choices=["build", "list"])
+    ap.add_argument("--root", default=".", help="仓根（默认当前目录）")
+    ap.add_argument("--out", default=None, help="build 的输出路径（默认 <root>/facts/materials.json）")
+    ap.add_argument("--status", choices=["registered", "unregistered"], help="list 过滤")
+    args = ap.parse_args(argv)
+    root = Path(args.root).resolve()
+
+    if args.action == "build":
+        out = Path(args.out) if args.out else root / "facts" / "materials.json"
+        data = write(root, out)
+        print(f"materials -> {out}（{data['count']} 条，已登记 {data['registered']}）")
+        return 0
+
+    out = Path(args.out) if args.out else root / "facts" / "materials.json"
+    if not out.is_file():
+        print(f"{out} 不存在，先跑 materials build", file=sys.stderr)
+        return 2
+    data = json.loads(out.read_text(encoding="utf-8"))
+    rows = data["rows"]
+    if args.status:
+        rows = [r for r in rows if r["status"] == args.status]
+    for r in rows:
+        print(f"{r['id']:<60} {r['status']:<12} {r['digest']} {r['lines']:>6}行")
+    return 0
