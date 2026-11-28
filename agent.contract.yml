@@ -1,0 +1,9 @@
+# agent 总控契约：本仓面向 allin，提供能力，不做总控
+schema: agent-entry-contract/v1
+repo: allin-governance
+role: 面向 allin 的能力层（scan --catalog / facts / 门禁）
+entrypoint: python -m allin_governance --help
+verification: python -m allin_governance publish release --upload
+controlled_by: agent
+owns: 通用发现与体检能力/门禁规则实现
+forbids: 机器事实/人工语义/会话总控
