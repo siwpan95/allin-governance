@@ -1,5 +1,27 @@
 # 变更记录
 
+## 2.5.4 —— 2026-11-28
+
+### 调研指出的三处缺陷，修在 venv 能力里
+1. **rebuild 安装失败仍报成功**（最严重）：`pip install` 失败只 break，旧环境已被改名、
+   目标是半成品，却返回 `rebuilt: True`。现在失败即删新环境、把旧环境改名还原，返回
+   `rebuilt: False, rolled_back: True`；
+2. **home 判据只看 `Path.exists()`**：路径存在不等于健康。新增四元组：路径存在、
+   major.minor 与解释器一致（`drift-abi` / `drift-name-only`）、`home == base_prefix`、
+   `import ssl, sqlite3, ctypes` 冒烟；
+3. **基准解释器跨 minor 默认重建**：会换 ABI。现在拒绝并提示显式指定基准。
+
+配套：allin 的深度巡检 `repair_home()` 对跨 minor **拒绝改写 pyvenv.cfg**
+（把 ABI 问题伪装成修好比不修更危险），并在注释里指向 `venv rebuild` 的正解。
+
+6 条测试（新增 ABI 漂移分类、cross-minor 拒绝重建）。
+
+### PKM 与 TextCNN（调研结论，未动工）
+- 文档体系暂不拆仓：现有门禁（索引双射/链接/机器事实）绑在仓内路径上，拆出去等于
+  让判据跨仓失效；建议先在 `docs/pkm/` 做索引分段与派生视图（调研 §5）；
+- TextCNN（Kim 2014）已在 `_ml/` 作为骨架，接 PKM 之前先攒标注集；
+  接法应是「软判断只用于排序，硬结论仍由判据给」，与现有 router 的分工一致。
+
 ## 2.5.3 —— 2026-11-28
 
 ### venv check / repair / rebuild：虚拟环境的体检与自愈

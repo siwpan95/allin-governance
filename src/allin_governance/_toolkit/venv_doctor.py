@@ -47,6 +47,27 @@ def _run(exe: Path, args: list[str], timeout: int = 60) -> tuple[int, str]:
         return 127, str(exc)
 
 
+def _home_version(home: str) -> str:
+    """从 home 目录名/解释器推断版本（3.13.12 / python3.13 两种形态）。"""
+    import re
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", home)
+    return ".".join(x for x in m.groups() if x) if m else ""
+
+
+def classify_home(home: str, interpreter: str) -> str | None:
+    """纯函数：home 版本与解释器版本的关系。返回 None / drift-name-only / drift-abi。
+
+    拆成纯函数是为了能被单测直接验证——否则只能靠造一个「坏得刚好」的 venv。
+    """
+    hv = _home_version(home)
+    iv = interpreter.replace("Python ", "").strip()
+    if not hv or not iv:
+        return None
+    if hv == iv:
+        return None
+    return "drift-abi" if hv.split(".")[0:2] != iv.split(".")[0:2] else "drift-name-only"
+
+
 def check(root: Path) -> dict:
     """只读体检。返回 {venv, issues:[{code,detail}], interpreter, pip, home}。"""
     venv = find_venv(root)
@@ -72,6 +93,16 @@ def check(root: Path) -> dict:
             issues.append({"code": "home-missing", "detail": home})
     else:
         issues.append({"code": "pyvenv-missing", "detail": str(cfg)})
+
+    # 冒烟导入：ssl/sqlite3/ctypes 任一不可用，venv 就是「活着但废了」——
+    # 只查 Path(home).exists() 会把它判成健康（调研指出的判据不足）。
+    rc_smoke, smoke = _run(py, ["-c", "import ssl, sqlite3, ctypes; print('ok')"], 60)
+    if rc_smoke != 0:
+        issues.append({"code": "import-smoke-failed", "detail": smoke.strip()[:200]})
+    if home:
+        drift = classify_home(home, version)
+        if drift:
+            issues.append({"code": drift, "detail": f"home={home} interpreter={version or '-'}"})
 
     rc, out = _run(py, ["-m", "pip", "--version"], 60)
     pip = out.strip().splitlines()[0] if rc == 0 and out.strip() else ""
@@ -104,6 +135,20 @@ def rebuild(root: Path, *, dry_run: bool = False) -> dict:
     """重建：旧 venv 改名保留 → 以当前解释器重建 → 装 requirements。"""
     old = find_venv(root)
     base_py = sys.executable
+    if old:
+        cfg = old / "pyvenv.cfg"
+        if cfg.is_file():
+            hv = ""
+            for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.lower().startswith("home"):
+                    hv = _home_version(line.split("=", 1)[1])
+                    break
+            bv = ".".join(str(x) for x in sys.version_info[:2])
+            if hv and hv.split(".")[:2] != bv.split("."):
+                return {"rebuilt": False, "stage": "base-mismatch",
+                        "detail": f"旧环境基准 {hv} 与当前解释器 {bv} 跨 minor；"
+                                  "重建会换 ABI，需显式指定基准解释器（--base）后再执行"}
+                  
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backup = (old.with_name(old.name + f".bak-{stamp}") if old else None)
     target = old or (root / ".venv")
@@ -128,7 +173,12 @@ def rebuild(root: Path, *, dry_run: bool = False) -> dict:
         rc, out = _run(new_py, ["-m", "pip", "install", "-q", "-r", req], 1800)
         installed.append({"file": req, "ok": rc == 0, "detail": "" if rc == 0 else out.strip()[-300:]})
         if rc != 0:
-            break
+            # 安装失败 = 重建失败：把旧环境还回去，绝不留下「半新半旧」还报成功
+            shutil.rmtree(target, ignore_errors=True)
+            if backup and backup.exists():
+                backup.rename(old)
+            return {"rebuilt": False, "stage": "pip", "installed": installed,
+                    "detail": out.strip()[-300:], "rolled_back": True}
     state = check(root)
     return {"rebuilt": True, "backup": plan["backup"], "installed": installed, "after": state}
 

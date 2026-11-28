@@ -37,3 +37,20 @@ def test_rebuild_dry_run_keeps_old(tmp_path):
     res = rebuild(tmp_path, dry_run=True)
     assert res["old"] == str(venv)
     assert venv.exists(), "dry-run 不得改动现有环境"
+
+
+def test_minor_drift_is_abi_risk():
+    """home 与解释器跨 minor 是 ABI 风险；同名小版本差只是命名漂移。"""
+    from .venv_doctor import classify_home
+    assert classify_home("C:/py/3.12.9", "Python 3.13.14") == "drift-abi"
+    assert classify_home("C:/py/3.13.12", "Python 3.13.14") == "drift-name-only"
+    assert classify_home("C:/py/3.13.0", "Python 3.13.0") is None
+
+
+def test_rebuild_refuses_cross_minor(tmp_path):
+    venv = _fake_venv(tmp_path)
+    major = f"{__import__('sys').version_info[0]}.{__import__('sys').version_info[1] - 1}.99"
+    (venv / "pyvenv.cfg").write_text(f"home = C:/py/{major}" + chr(10), encoding="utf-8")
+    res = rebuild(tmp_path)
+    assert res["rebuilt"] is False and res["stage"] == "base-mismatch"
+    assert venv.exists(), "拒绝重建时不得动旧环境"
