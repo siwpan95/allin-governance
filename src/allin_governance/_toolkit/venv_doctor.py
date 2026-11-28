@@ -138,10 +138,10 @@ def repair(root: Path) -> dict:
     return {"repaired": False, "reason": "无问题"}
 
 
-def rebuild(root: Path, *, dry_run: bool = False) -> dict:
+def rebuild(root: Path, *, dry_run: bool = False, base: str | None = None) -> dict:
     """重建：旧 venv 改名保留 → 以当前解释器重建 → 装 requirements。"""
     old = find_venv(root)
-    base_py = sys.executable
+    base_py = base or sys.executable
     if old:
         cfg = old / "pyvenv.cfg"
         if cfg.is_file():
@@ -190,13 +190,31 @@ def rebuild(root: Path, *, dry_run: bool = False) -> dict:
     return {"rebuilt": True, "backup": plan["backup"], "installed": installed, "after": state}
 
 
+def upgrade_in_place(root: Path, *, base: str | None = None) -> dict:
+    """基准解释器被**就地升级**后同步 venv（`python -m venv --upgrade`）。
+
+    与 rebuild 的区别：不重建环境、不装依赖，只按新基准修链接与 stdlib。
+    官方原文（venv 文档）是 "assuming Python has been upgraded in-place"——
+    跨 minor 或基准搬家时不适用（那属于 rebuild）。
+    """
+    venv = find_venv(root)
+    if venv is None:
+        return {"upgraded": False, "reason": "no-venv（用 rebuild）"}
+    base_py = base or sys.executable
+    rc, out = _run(Path(base_py), ["-m", "venv", "--upgrade", str(venv)], 300)
+    state = check(root)
+    return {"upgraded": rc == 0, "base": base_py, "detail": "" if rc == 0 else out.strip()[-300:],
+            "after_issues": state["issues"]}
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="venv", description="虚拟环境体检 / 修复 / 重建")
-    ap.add_argument("action", choices=["check", "repair", "rebuild"])
+    ap.add_argument("action", choices=["check", "repair", "rebuild", "upgrade-in-place"])
     ap.add_argument("--root", default=".", help="仓根（默认当前目录）")
     ap.add_argument("--json", action="store_true", help="机读输出")
     ap.add_argument("--dry-run", action="store_true", help="rebuild 只打印计划")
+    ap.add_argument("--base", default=None, help="基准解释器（默认当前解释器；跨仓重建时必须显式给出）")
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
 
@@ -218,11 +236,16 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  NOTE  [{n['code']}] {n['detail']}")
         return 0 if not state["issues"] else 1
 
+    if args.action == "upgrade-in-place":
+        res = upgrade_in_place(root, base=args.base)
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0 if res.get("upgraded") else 1
+
     if args.action == "repair":
         res = repair(root)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0 if res.get("repaired") else 1
 
-    res = rebuild(root, dry_run=args.dry_run)
+    res = rebuild(root, dry_run=args.dry_run, base=args.base)
     print(json.dumps(res, ensure_ascii=False, indent=2))
     return 0 if (res.get("dry_run") or res.get("rebuilt")) else 1

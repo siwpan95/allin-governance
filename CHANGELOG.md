@@ -1,5 +1,30 @@
 # 变更记录
 
+## 2.5.6 —— 2026-11-28
+
+### `upgrade-in-place` + `--base`：把「修」和「重建」之间的那条路补上
+调研指出 `repair` 的合法领地只有 pip 层，碰解释器基准只有两条路：
+`python -m venv --upgrade`（基准被**就地升级**）或 rebuild（基准搬家/没了）。
+上一版只有 repair/rebuild，中间那段只能靠手敲。新增：
+
+```
+allin-governance venv upgrade-in-place --root <仓根> [--base <解释器>]
+```
+
+`rebuild` 同时新增 `--base`：跨仓重建时**必须显式给基准**，否则会把 A 仓的解释器
+装进 B 仓（调研点名的错误用法）。
+
+### 实测：三仓的 venv 历史
+- `allin`：已有 .venv（3.13.14，home 指 3.13.12 → drift-name-only，不阻断）；
+- `govrule`：**没有 .venv** → 用 rebuild 建出（3.13.14，home=vendor/python，0 问题），
+  250 测试在 venv 里通过；
+- `allin-governance`: 同样建出 .venv 并 `pip install -e ".[full]"`。
+
+### 一个如实记录的既有缺陷
+`_repocheck/test_scanner.py` 两个用例在**任何解释器**上都失败
+（`attempted relative import with no known parent package`），与本次改动无关；
+不修、不掩盖，留给该模块的负责人。
+
 ## 2.5.5 —— 2026-11-28
 
 ### 判据分级：drift-name-only 不该阻断
