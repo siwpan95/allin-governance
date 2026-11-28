@@ -197,6 +197,12 @@ def _cmd_scan(argv: list[str]) -> int:
     return scan_repos.main(argv)
 
 
+def _cmd_venv(argv: list[str]) -> int:
+    """venv check|repair|rebuild —— 通用能力，不依赖任何消费仓的业务语义。"""
+    from ._toolkit import venv_doctor  # noqa: PLC0415
+    return venv_doctor.main(argv)
+
+
 def _cmd_deps(argv: list[str]) -> int:
     """依赖体检：requirements 声明 · 解释器实装 · 仓内 import 三者对账。"""
     _scan, deps_doctor = _toolkit_modules()
@@ -595,6 +601,7 @@ SUBCOMMANDS: dict[str, tuple[str, object]] = {
     "verify": ("复核 init 生成的套装快照是否仍与 GENERATED.json 记载的一致", _cmd_verify),
     "scan": ("发布区扫盘：项目指纹 / 重复检出 / 迁移残留（只报告不处置）", _cmd_scan),
     "deps": ("依赖体检：requirements 声明 · 解释器实装 · 仓内 import 三者对账", _cmd_deps),
+    "venv": ("虚拟环境体检 / 修复 / 重建（check|repair|rebuild）", _cmd_venv),
     "github": ("GitHub 建仓/推送/三端巡检（gitee 为权威）；github-sync 子命令走巡检器", _cmd_github),
     "gitee": ("Gitee 建仓/转公开/发发行版（权威端）；与 github 子命令配对成双核", _cmd_gitee),
     "publish": ("PyPI 发版链路：check/build/verify/upload/release —— 双产物是硬判据", _cmd_publish),

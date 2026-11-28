@@ -1,5 +1,25 @@
 # 变更记录
 
+## 2.5.3 —— 2026-11-28
+
+### venv check / repair / rebuild：虚拟环境的体检与自愈
+每个仓都有 `.venv`，每个仓都会坏。修法不依赖业务语义——典型该下沉的能力。
+
+```
+allin-governance venv check   --root <仓根> [--json]
+allin-governance venv repair  --root <仓根>     # 只修 pip（ensurepip），不猜解释器
+allin-governance venv rebuild --root <仓根> [--dry-run]   # 旧环境改名保留，再重建
+```
+
+判据（check）：解释器可执行 / `pyvenv.cfg` 的 home 指向仍存在 / pip 可用。
+- `home-missing`（换机/卸载 Python 的典型症状）**原地修不了**，repair 明确拒绝并建议 rebuild；
+- rebuild 先把旧 venv 改名为 `.bak-<时间戳>`，失败则回滚，不静默删除；
+- 有 `requirements-dev.txt` / `requirements.txt` 时按序安装。
+
+消费仓里那套 964 行深度巡检（7 项）保持原样，作为超集委派源；本命令是不依赖消费仓的最小闭环。
+
+4 条测试（临时目录，假 venv：无环境 / 坏 home / dry-run 不改动）。
+
 ## 2.5.2 —— 2026-11-28
 
 ### 从「只报告」到「解决需求」：`scan --catalog`
